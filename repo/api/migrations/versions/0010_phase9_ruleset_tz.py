@@ -1,6 +1,6 @@
 """phase 9 — rule-set manage permission + per-user timezone preference
 
-Revision ID: 0010_phase9_rule_set_perm_user_tz
+Revision ID: 0010_phase9_ruleset_tz
 Revises: 0009_phase8_model_runs
 Create Date: 2026-04-19
 
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0010_phase9_rule_set_perm_user_tz"
+revision: str = "0010_phase9_ruleset_tz"
 down_revision: Union[str, None] = "0009_phase8_model_runs"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
