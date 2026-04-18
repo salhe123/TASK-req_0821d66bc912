@@ -1,0 +1,62 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mgew
+      POSTGRES_PASSWORD: mgew
+      POSTGRES_DB: mgew
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./infra/db/init.sql:/docker-entrypoint-initdb.d/10-pgcrypto.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mgew -d mgew"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build:
+      context: ./api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://mgew:mgew@db:5432/mgew
+      DATABASE_URL_SYNC: postgresql+psycopg://mgew:mgew@db:5432/mgew
+      KEK_PATH: /run/secrets/kek
+      SESSION_SIGNING_KEY_PATH: /run/secrets/session_signing_key
+      BACKUP_VOLUME: /var/lib/mgew/backups
+      BACKUP_SCHEDULER_ENABLED: "true"
+      BACKUP_SCHEDULER_HOUR: "2"
+      BACKUP_SCHEDULER_TIMEZONE: UTC
+      BACKUP_RESTORE_EXECUTE: "true"
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./infra/secrets:/run/secrets:ro
+      - backup_data:/var/lib/mgew/backups
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/health >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  web:
+    build:
+      context: ./web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 2 -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  db_data:
+  backup_data:

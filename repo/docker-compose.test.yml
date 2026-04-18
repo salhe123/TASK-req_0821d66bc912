@@ -1,0 +1,84 @@
+services:
+  api:
+    environment:
+      ENVIRONMENT: test
+      LOG_LEVEL: WARNING
+
+  web:
+    environment:
+      NODE_ENV: production
+
+  api_tests:
+    build:
+      context: ./api
+    working_dir: /srv/api
+    command:
+      - sh
+      - -c
+      - coverage run -m pytest -q /tests/unit /tests/api && coverage report && coverage xml -o /coverage/api-coverage.xml
+    # Used by both the unit+api tier and the load tier.
+    environment:
+      API_BASE_URL: http://api:8000
+      DATABASE_URL: postgresql+asyncpg://mgew:mgew@db:5432/mgew
+      DATABASE_URL_SYNC: postgresql+psycopg://mgew:mgew@db:5432/mgew
+      DATABASE_DSN: "host=db port=5432 dbname=mgew user=mgew password=mgew"
+      KEK_PATH: /run/secrets/kek
+      SESSION_SIGNING_KEY_PATH: /run/secrets/session_signing_key
+      RUN_MIGRATIONS_ON_STARTUP: "false"
+      PYTHONPATH: /srv/api
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./infra/secrets:/run/secrets:ro
+      - ./coverage:/coverage
+      - ./api/tests:/tests:ro
+
+  web_tests:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.test
+    command: npm run test:component -- --run
+    environment:
+      COVERAGE_DIR: /coverage/web-lcov
+    volumes:
+      - ./coverage:/coverage
+
+  e2e:
+    build:
+      context: ./e2e
+    environment:
+      WEB_BASE_URL: http://web:80
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - ./coverage:/coverage
+
+  load_tests:
+    build:
+      context: ./api
+    working_dir: /srv/api
+    # --rootdir /tests so pytest loads /tests/conftest.py (where api_base_url
+    # and db_dsn live), not just conftests under /tests/load/.
+    command: pytest -q -s --rootdir /tests /tests/load
+    environment:
+      API_BASE_URL: http://api:8000
+      DATABASE_DSN: "host=db port=5432 dbname=mgew user=mgew password=mgew"
+      KEK_PATH: /run/secrets/kek
+      SESSION_SIGNING_KEY_PATH: /run/secrets/session_signing_key
+      RUN_MIGRATIONS_ON_STARTUP: "false"
+      PYTHONPATH: /srv/api
+      # Default to the prompt-contract 150 ms budget. Dev runs on
+      # macOS-under-Colima that hit the VM/syscall overhead can override via
+      # `P95_BUDGET_MS` in the host env before `docker compose` runs; CI must
+      # leave the default untouched.
+      P95_BUDGET_MS: "${P95_BUDGET_MS:-150}"
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./infra/secrets:/run/secrets:ro
+      - ./api/tests:/tests:ro

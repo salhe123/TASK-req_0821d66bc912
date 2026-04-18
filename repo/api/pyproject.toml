@@ -1,0 +1,62 @@
+[project]
+name = "mgew-api"
+version = "0.1.0"
+description = "Model Governance & Evaluation Workbench API"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.115.5",
+    "uvicorn[standard]==0.32.1",
+    "pydantic==2.10.3",
+    "pydantic-settings==2.7.0",
+    "sqlalchemy[asyncio]==2.0.36",
+    "alembic==1.14.0",
+    "asyncpg==0.30.0",
+    "psycopg[binary]==3.2.3",
+    "argon2-cffi==23.1.0",
+    "python-multipart==0.0.19",
+    "httpx==0.28.1",
+    "orjson==3.10.12",
+    "cryptography==44.0.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.0",
+    "coverage==7.6.9",
+    "httpx==0.28.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.coverage.run]
+# Cover the whole `app` package; branches enabled for more honest reporting.
+# NOTE: the pytest process running in the `api_tests` container imports the
+# modules it exercises (services, unit-level code, httpx-facing helpers).
+# Code executed in the separate `api` container (routes, middleware) is
+# validated by API-tier payload assertions but not line-instrumented here
+# unless coverage is combined across containers. See coverage/README.md.
+source = ["app"]
+branch = true
+# Don't count purely-declarative files that have no runtime branching.
+omit = [
+  "app/__init__.py",
+  "app/**/__init__.py",
+  "app/scripts/create_backup.py",  # runs out of process
+  "app/scripts/seed_admin.py",     # runs out of process
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+]
