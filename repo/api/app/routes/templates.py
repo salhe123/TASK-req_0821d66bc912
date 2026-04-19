@@ -121,7 +121,10 @@ async def publish_version(
         version_no=next_no,
         items=[item.model_dump() for item in body.items],
     )
-    db.add(version)
+    # Append via the relationship so the in-memory `template.versions`
+    # collection reflects the new row immediately. `selectinload` alone won't
+    # re-read the collection after a flush once it's been cached.
+    template.versions.append(version)
     await db.flush()
     await write_audit(
         db,
@@ -132,10 +135,5 @@ async def publish_version(
         payload={"version_no": next_no},
     )
     await db.commit()
-
-    template = (
-        await db.execute(
-            select(Template).where(Template.id == template.id).options(selectinload(Template.versions))
-        )
-    ).scalar_one()
+    await db.refresh(template, attribute_names=["versions"])
     return _summary(template)

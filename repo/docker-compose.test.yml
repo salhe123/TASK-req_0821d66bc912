@@ -3,6 +3,11 @@ services:
     environment:
       ENVIRONMENT: test
       LOG_LEVEL: WARNING
+      # Disable the nightly scheduler + destructive pg_restore path in tests;
+      # the backup state machine is exercised on its own, and a real restore
+      # would wipe the integration DB mid-test.
+      BACKUP_SCHEDULER_ENABLED: "false"
+      BACKUP_RESTORE_EXECUTE: "false"
 
   web:
     environment:

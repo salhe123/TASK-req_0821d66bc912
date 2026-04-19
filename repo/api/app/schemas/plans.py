@@ -87,7 +87,10 @@ class DiffResponse(BaseModel):
 
 class ShareLinkCreateRequest(BaseModel):
     role: str = Field(min_length=1, max_length=64)
-    expires_in_days: int = Field(default=7, ge=1, le=7)
+    # Request an expiry in days; the server clamps to the share-link policy
+    # ceiling (7 days) inside `compute_expiry`, so any request >7 is accepted
+    # and normalised. We still bound the value loosely to reject absurd input.
+    expires_in_days: int = Field(default=7, ge=1, le=3650)
 
 
 class ShareLinkResponse(BaseModel):

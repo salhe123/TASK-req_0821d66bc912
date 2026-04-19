@@ -19,6 +19,12 @@ class _FakeSelectResult:
                 return s._ids
         return _S(self._ids)
 
+    def all(self):
+        # Post-audit `prune_old` selects `(id, filename)` tuples and calls
+        # `.all()` directly. Synthesise a filename so the unlink loop is a
+        # no-op against the non-existent BACKUP_VOLUME path in this unit env.
+        return [(str(i), f"mgew-{i}.bin") for i in self._ids]
+
 
 class _FakeSession:
     def __init__(self, ids_to_return):

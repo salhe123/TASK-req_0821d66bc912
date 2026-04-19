@@ -39,14 +39,22 @@ def _make_user(db_dsn: str, username: str, password: str, role: str) -> str:
 
 
 async def _login(base: str, username: str, password: str) -> httpx.AsyncClient:
-    client = httpx.AsyncClient(base_url=base, timeout=10.0)
-    resp = await client.post(
-        "/api/auth/login", json={"username": username, "password": password}
-    )
+    # Log in with a throwaway client, then return a fresh (unopened) client
+    # so `async with await _login(...) as c:` works — httpx refuses to reopen
+    # a client that has already issued a request.
+    async with httpx.AsyncClient(base_url=base, timeout=10.0) as bootstrap:
+        resp = await bootstrap.post(
+            "/api/auth/login", json={"username": username, "password": password}
+        )
     body = resp.json()
-    client.headers["Authorization"] = f"Bearer {body['session_token']}"
-    client.headers["X-CSRF-Token"] = body["csrf_token"]
-    return client
+    return httpx.AsyncClient(
+        base_url=base,
+        timeout=10.0,
+        headers={
+            "Authorization": f"Bearer {body['session_token']}",
+            "X-CSRF-Token": body["csrf_token"],
+        },
+    )
 
 
 async def _seed_cycle_with_two_evaluators(
