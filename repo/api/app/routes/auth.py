@@ -204,6 +204,7 @@ async def me(
         permissions=[{"resource": r, "action": a} for (r, a) in sorted(auth.permissions)],
         field_view_allowlist=sorted(auth.field_view_allowlist),
         timezone=tz,
+        csrf_token=auth.csrf_token,
     )
 
 

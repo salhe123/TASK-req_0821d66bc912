@@ -28,6 +28,11 @@ class MeResponse(BaseModel):
     permissions: list[dict[str, str]]
     field_view_allowlist: list[str]
     timezone: str = "UTC"
+    # Returned so the SPA can restore its CSRF token after a hard page reload
+    # (Pinia state is in-memory only; the session cookie survives the reload,
+    # but the CSRF token needs to be re-fetched so mutating requests keep
+    # passing the server-side CSRF check).
+    csrf_token: str = ""
 
 
 class UpdateTimezoneRequest(BaseModel):

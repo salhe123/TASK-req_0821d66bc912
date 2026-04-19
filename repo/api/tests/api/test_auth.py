@@ -96,7 +96,7 @@ async def test_me_returns_permissions_and_allowlist(admin_client) -> None:
     body = resp.json()
     assert set(body.keys()) == {
         "user_id", "username", "display_name", "roles", "permissions",
-        "field_view_allowlist", "timezone",
+        "field_view_allowlist", "timezone", "csrf_token",
     }
     assert body["roles"] == ["Administrator"]
     # Administrator role carries wildcard allowlist

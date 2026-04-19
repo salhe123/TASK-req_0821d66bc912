@@ -32,6 +32,8 @@ interface MeResponse {
   roles: string[];
   permissions: SessionPermission[];
   field_view_allowlist: string[];
+  timezone?: string;
+  csrf_token?: string;
 }
 
 export const useSessionStore = defineStore("session", () => {
@@ -93,6 +95,12 @@ export const useSessionStore = defineStore("session", () => {
       permissions: me.data.permissions,
       fieldViewAllowlist: me.data.field_view_allowlist,
     };
+    // Page-reload restore: the session cookie survived but Pinia's csrfToken
+    // didn't, so mutating requests would fail CSRF. /me returns the current
+    // session's csrf_token exactly so the SPA can rehydrate it here.
+    if (me.data.csrf_token) {
+      csrfToken.value = me.data.csrf_token;
+    }
   }
 
   async function logout(): Promise<void> {
