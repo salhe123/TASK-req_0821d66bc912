@@ -33,8 +33,13 @@ class Unauthorized(ApiError):
 
 
 class Forbidden(ApiError):
-    def __init__(self, error: str = "forbidden", message: str = "forbidden"):
-        super().__init__(error=error, message=message, status_code=403)
+    def __init__(
+        self,
+        error: str = "forbidden",
+        message: str = "forbidden",
+        details: dict[str, Any] | None = None,
+    ):
+        super().__init__(error=error, message=message, status_code=403, details=details)
 
 
 class Locked(ApiError):
