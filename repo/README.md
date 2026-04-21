@@ -140,19 +140,3 @@ For the local walkthrough using the commands on this page and `./run_tests.sh`:
 | **Administrator** | `admin` | `AdminTest123!` | Set by you in step 4; full access to every module. |
 | **Administrator** (test only) | `e2e_admin` | `E2E-Admin-Pass-1` | Seeded by `run_tests.sh` before the Playwright tier; lives only in the disposable test DB and is torn down with the stack. |
 | **Evaluator / Reviewer / Plan Owner / ML Engineer** | created by admin | chosen on create | Created via `/api/admin/users` or the Administration UI. |
-
-## Non-negotiables
-
-These invariants hold from Phase 1 onward (see `plan.md` for the full schedule):
-
-* No outbound network calls at runtime — everything works air-gapped
-* Every mutating endpoint writes exactly one semantic `audit_logs` row
-* Sensitive values are never returned raw without the caller's `field_view_allowlist` grant
-* All scoring and pricing math uses `Decimal`; no binary floats
-* Template, rule-set, and plan versions are immutable once saved
-
-## Related documents
-
-* **`plan.md`** — phased implementation plan and testing protocol
-* **`runbook.md`** — operator runbook (KEK, backups, restore, rollback override, audit-action reference)
-* **`coverage/README.md`** — what lives in `coverage/` after a test run

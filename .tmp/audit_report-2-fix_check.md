@@ -1,235 +1,121 @@
-# Detailed Audit Report: Why Overall Verdict Is Partial Pass
+# Audit Report 2 — Fix Verification
 
-- Audit Date: April 18, 2026
+- Verification Date: 2026-04-21
+- Method: static, evidence-bound re-read of `.tmp/audit_report-2.md` issues against the current repository (`repo/`). No runtime execution.
+- Scope: every Blocker, High, Medium, and Low issue enumerated in `.tmp/audit_report-2.md` §5 (lines 136–214).
 
-## Document Purpose
-This report expands the prior static audit and explains, in detail, why the delivery received an **overall verdict of Partial Pass** instead of Pass or Fail.
+## Status Tokens
 
-This is a **static-only** assessment (no runtime execution, no Docker, no tests run in this audit session).
+Each issue below carries exactly one of:
 
-## Final Status (Detailed)
-- Overall conclusion: **Partial Pass**
-- Meaning in this context:
-  - The project is materially real, broad, and architecturally credible.
-  - Major functional surfaces are present and test scaffolding is substantial.
-  - However, there are **material defects and requirement-fit gaps** (including one Blocker and multiple High issues) that prevent acceptance as full Pass.
+- **fixed** — change present in repo and resolves the stated defect.
+- **verified** — unchanged behavior that already satisfies the requirement (independent re-check).
+- **open** — defect still present; evidence points to the unchanged code.
+- **partial** — code has changed in the direction of the fix but does not fully satisfy the minimum actionable fix from the source audit.
 
-## Why It Is Not Fail
-The delivery is not a thin demo and not fundamentally off-prompt. It has substantial implementation depth across:
-- Identity/session/CSRF/lockout/audit (`api/app/routes/auth.py:42`, `api/app/middleware/auth.py:46`, `api/migrations/versions/0002_phase1_identity.py:166`)
-- Evaluation lifecycle and scoring trace infrastructure (`api/app/routes/assignments.py:141`, `api/app/services/scoring.py:71`, `api/app/services/submissions.py:58`)
-- Plan governance workflows (`api/app/routes/plans.py:296`, `api/app/routes/plans.py:348`, `api/app/routes/plans.py:459`)
-- Model governance workflows (register/runs/promote/routing/rollback) (`api/app/routes/models.py:128`, `api/app/routes/models.py:193`, `api/app/routes/experiments.py:183`, `api/app/routes/experiments.py:211`)
-- Multi-tier test presence (`api/tests/api/test_cycles_lifecycle.py:16`, `web/tests/component/CyclesView.test.ts:13`, `e2e/tests/cycle_lifecycle.spec.ts:11`)
+## Summary
 
-So this is not a repository-level failure. It is a delivery with important strengths but with unresolved high-impact acceptance gaps.
+| # | Severity | Title (source `.tmp/audit_report-2.md`) | Status |
+|---|----------|------------------------------------------|--------|
+| 1 | Blocker  | Secret key material is present in delivery workspace (L139) | **fixed** |
+| 2 | High     | Feedback events are not integrity-bound to experiment routing arm/model (L151) | **open** |
+| 3 | High     | Prompt contract "make-up up to 5 business days" is not enforced (L162) | **open** |
+| 4 | High     | Plan version "copy" workflow is not explicitly delivered (L171) | **open** |
+| 5 | Medium   | Client-side subtotal logic diverges from server scoring missing-strategy semantics (L184) | **open** |
+| 6 | Medium   | Digest reminder is mounted only in cycles page (L195) | **open** |
+| 7 | Low      | README migration-range statement is stale (L205) | **open** |
 
-## Why It Is Not Pass
-It is not Pass because several acceptance-critical and security-critical issues remain:
-- Blocker-level backup security mismatch to prompt.
-- High-severity authorization and requirement-fit gaps in active user flows.
-- Important object-level authorization weaknesses.
+Headline: **1 / 7 fixed** (Blocker only). All six post-Blocker issues remain open.
 
-These defects are substantial enough that the system could be operationally risky or prompt-incomplete even though many features exist.
+---
 
-## Section-by-Section Deep Assessment
+## 1. [Blocker] Secret key material is present in delivery workspace — **fixed**
 
-## 1) Hard Gates
+- Source evidence: `.tmp/audit_report-2.md:139` ("Secret key material is present in delivery workspace"), policy quote at `repo/infra/secrets/README.md:6`.
+- Minimum actionable fix (source): "Ensure these files are never included in distributable artifacts/repo history; ship placeholders only and require operator provisioning."
+- Current evidence (fixed):
+  - `.gitignore` explicitly excludes the two files at `repo/.gitignore:29` (`infra/secrets/kek`) and `repo/.gitignore:30` (`infra/secrets/session_signing_key`), under the comment at `repo/.gitignore:28` `# Secrets (dev-only mount — never commit real KEK material)`.
+  - `git ls-files --error-unmatch infra/secrets/kek infra/secrets/session_signing_key` → `error: pathspec … did not match any file(s) known to git` for both files (files are not tracked in repo history).
+  - `repo/infra/secrets/README.md:9` documents that the dev values are generated locally via `scripts/generate_dev_secrets.sh` rather than committed.
+- Residual note (non-blocking): the files still exist locally on disk (32 bytes each, mode `-rw-------`) because the Compose stack mounts them at runtime. This is the intended dev-stack behavior; delivery hygiene is enforced at the git boundary, not at the filesystem.
 
-### 1.1 Documentation and static verifiability
-- Verdict: **Pass**
-- Why:
-  - Startup/test/config instructions are explicit and traceable.
-  - Entry points and project structure are coherent.
-- Key evidence:
-  - `README.md:53` (run flow), `README.md:90` (testing flow), `run_tests.sh:1` (test orchestrator), `coverage/README.md:5` (coverage boundary caveat)
+## 2. [High] Feedback events are not integrity-bound to experiment routing arm/model — **open**
 
-### 1.2 Material deviation from prompt
-- Verdict: **Partial Pass**
-- Why:
-  - Core business domains exist.
-  - But several prompt-critical behaviors are either weakened or not wired into active workflow.
-- Key evidence:
-  - Assignment UX not implementing required live subtotal/flags behavior in active page (`web/src/views/AssignmentFormView.vue:133`)
-  - Embedded feedback controls not integrated into active route workflow (`web/src/views/FeedbackView.vue:39`, `web/src/components/FeedbackControl.vue:71`)
-  - Backup implementation explicitly test-harness placeholder (`api/app/services/backup_archive.py:4`, `api/app/services/backup_archive.py:33`)
+- Source evidence: `.tmp/audit_report-2.md:151` — caller-supplied `model_version_id` accepted if it merely exists (`api/app/services/feedback.py:107`, `:114`).
+- Minimum actionable fix (source): validate `(experiment_id, arm, model_version_id)` consistency against `inference_routing` before persisting.
+- Current evidence (still open):
+  - `repo/api/app/services/feedback.py:99-103` loads `InferenceRouting` for the experiment but only uses it to *default* `model_version_id` when the caller omits it.
+  - `repo/api/app/services/feedback.py:107-116` accepts a caller-supplied `resolved_mv` and validates only that a `ModelVersion` row with that id exists (`scalar_one_or_none()` at `:114`). There is no cross-check that `resolved_mv` matches `routing.model_a_id` when `arm == "A"` or `routing.model_b_id` when `arm == "B"`.
+  - No regression test exists for this constraint (confirmed below in §8 of the rewritten coverage report).
+- Recommended fix location: add an arm→model_version assertion between `repo/api/app/services/feedback.py:116` and `:118`, raising `Conflict(error="feedback_arm_model_mismatch", ...)`.
 
-## 2) Delivery Completeness
+## 3. [High] Prompt contract "make-up up to 5 business days" is not enforced — **open**
 
-### 2.1 Core explicit requirements coverage
-- Verdict: **Partial Pass**
-- Strengths:
-  - Scoring ledger concepts implemented (trace hash, version references, handling rules) (`api/app/services/scoring.py:165`, `api/app/services/submissions.py:135`)
-  - Governance plan workflows implemented (diff/export/share/rollback) (`api/app/routes/plans.py:296`, `api/app/routes/plans.py:379`, `api/app/routes/plans.py:399`)
-  - Model governance controls implemented (promotion gate, schema compatibility, rollback) (`api/app/routes/models.py:313`, `api/app/routes/models.py:329`, `api/app/routes/experiments.py:222`)
-- Gaps:
-  - Assignment form behavior in active evaluator flow does not satisfy prompt interaction detail.
-  - Backup encryption expectation not met by current implementation semantics.
+- Source evidence: `.tmp/audit_report-2.md:162` — schema permits up to 30 days (`api/app/schemas/cycles.py:49`).
+- Minimum actionable fix (source): constrain `makeup_business_days` to `le=5` and add regression tests.
+- Current evidence (still open):
+  - `repo/api/app/schemas/cycles.py:49` still reads `makeup_business_days: int = Field(default=5, ge=0, le=30)`. The upper bound is 30, not 5.
+  - Lifecycle tests (`repo/api/tests/api/test_cycles_lifecycle.py`) do not assert a `>5` rejection path.
+- Recommended fix: change `le=30` → `le=5` and add an API test expecting 422 when the caller posts `makeup_business_days=6`.
 
-### 2.2 End-to-end deliverable vs fragment
-- Verdict: **Pass**
-- Why:
-  - Full-stack deliverable with migrations, API, web, tests, docs.
-- Key evidence:
-  - `api/app/app.py:64`, `web/src/router/index.ts:13`, `api/migrations/versions/0009_phase8_model_runs.py:24`, `e2e/tests/full_flow.spec.ts:21`
+## 4. [High] Plan version "copy" workflow is not explicitly delivered — **open**
 
-## 3) Engineering and Architecture Quality
+- Source evidence: `.tmp/audit_report-2.md:171` — only create-version / rollback / diff / export / share exist (`api/app/routes/plans.py:213`, `:399`); no dedicated copy.
+- Minimum actionable fix (source): add an explicit copy-version endpoint and a UI action that clones lines + metadata into a new draft version.
+- Current evidence (still open):
+  - `repo/api/app/routes/plans.py` has no route containing the token `copy`. Grep against `copy|Copy` in `repo/api/app/routes/plans.py` returns no matches.
+  - The existing `POST /plans/{plan_id}/versions` at `repo/api/app/routes/plans.py:213` accepts a `parent_version_id` in the body but the caller must re-submit the full `lines` array — it is a create-with-parent-reference endpoint, not a copy-from-source endpoint.
+  - `repo/web/src/views/PlansView.vue` offers Share and Rollback actions but no Copy control.
+- Recommended fix: add `POST /plans/{plan_id}/versions/{version_id}/copy` that clones BOM lines + metadata into a new version, plus a matching UI button in `PlansView.vue`.
 
-### 3.1 Structure and decomposition
-- Verdict: **Pass**
-- Why:
-  - Clear bounded modules by domain.
-- Evidence:
-  - Route partitioning (`api/app/app.py:64`)
-  - Service partitioning (`api/app/services/scoring.py:1`, `api/app/services/feedback.py:1`, `api/app/services/plan_export.py:1`)
+## 5. [Medium] Client subtotal logic diverges from server scoring missing-strategy semantics — **open**
 
-### 3.2 Maintainability and extensibility
-- Verdict: **Partial Pass**
-- Why:
-  - Architecture is extendable, but critical security decisions are inconsistently enforced at object scope.
-- Evidence:
-  - RBAC primitive exists (`api/app/services/rbac.py:31`)
-  - Missing object checks on some reads (`api/app/routes/cycles.py:171`, `api/app/routes/models.py:279`)
+- Source evidence: `.tmp/audit_report-2.md:184` — UI skips all missing values with `continue`, ignoring `ZERO_FILL` denominator semantics (`web/src/components/EvaluationForm.vue:35-36`).
+- Minimum actionable fix (source): mirror server missing-strategy math in UI subtotal computation.
+- Current evidence (still open):
+  - `repo/web/src/components/EvaluationForm.vue:34-41` still computes:
+    ```ts
+    for (const item of props.items) {
+      const raw = values.value[item.key];
+      if (raw === null || raw === undefined) continue;
+      weighted += raw * item.weight;
+      weightSum += item.weight;
+    }
+    ```
+  - The `TemplateItem` interface at `repo/web/src/components/EvaluationForm.vue:4-12` carries `missing_strategy: string`, but the subtotal computation never branches on it. Server behavior distinguishes `ZERO_FILL` (raw→0, weight kept in denominator) from `EXCLUDE_FROM_DENOMINATOR` (skip numerator + denominator) at `repo/api/app/services/scoring.py`.
+- Recommended fix: branch on `item.missing_strategy` — for `ZERO_FILL`, treat missing as `0` and still include the weight in the denominator.
 
-## 4) Engineering Details and Professionalism
+## 6. [Medium] Digest reminder is mounted only in cycles page — **open**
 
-### 4.1 Error handling/logging/validation/API design
-- Verdict: **Partial Pass**
-- Strengths:
-  - Error envelopes standardized (`api/app/middleware/error_envelope.py:9`)
-  - Request ID correlation and structured logging (`api/app/middleware/request_context.py:17`, `api/app/core/logging.py:10`)
-  - CSRF + token checks in middleware (`api/app/middleware/auth.py:46`)
-- Shortfalls:
-  - Material authorization defects still present.
-  - Backup implementation quality below prompt-required security confidence.
+- Source evidence: `.tmp/audit_report-2.md:195` — `DigestBanner` only in `CyclesView` (`web/src/views/CyclesView.vue:101`).
+- Minimum actionable fix (source): mount the reminder banner at shell/dashboard level with role-aware visibility.
+- Current evidence (still open):
+  - Grep for `DigestBanner` across `repo/web/src/` returns only two sites, both inside `CyclesView.vue`: the import at `:6` and the render at `:101`.
+  - `repo/web/src/components/AppShell.vue` does not import or render `DigestBanner`; its template (`:41-63`) renders `RouterView` inside `app-shell__main` with no global banner slot.
+- Recommended fix: mount `<DigestBanner v-if="session.hasPermission('cycle', 'participate')" />` inside `AppShell.vue` above `RouterView`, and remove the per-view mount to avoid double render.
 
-### 4.2 Product-level maturity
-- Verdict: **Partial Pass**
-- Why:
-  - Product shape is real, but some core requirements are implemented as disconnected/placeholder paths.
-- Evidence:
-  - Disconnected evaluator UX component (`web/src/components/EvaluationForm.vue:31`) vs active page (`web/src/views/AssignmentFormView.vue:133`)
-  - Backup helper intentionally dummy (`api/app/services/backup_archive.py:4`)
+## 7. [Low] README migration-range statement is stale — **open**
 
-## 5) Prompt Understanding and Requirement Fit
+- Source evidence: `.tmp/audit_report-2.md:205` — README says migrations `0001 … 0009` but `0010` exists.
+- Minimum actionable fix (source): update README migration range.
+- Current evidence (still open):
+  - `repo/README.md:25` reads `│   ├── migrations/         # alembic versions 0001 … 0009`.
+  - Actual migration files in `repo/api/migrations/versions/`:
+    ```
+    0001_phase0_bootstrap.py          0007_phase6_feedback.py
+    0002_phase1_identity.py           0008_phase7_backups.py
+    0003_phase2_cycles.py             0009_phase8_model_runs.py
+    0004_phase3_scoring.py            0010_phase9_ruleset_tz.py
+    0005_phase4_plans.py              0011_admin_wildcard.py
+    0006_phase5_models.py
+    ```
+  - Actual range is `0001 … 0011`, not `0001 … 0009`. The README drift has widened since the audit was written.
+- Recommended fix: change `0001 … 0009` to `0001 … 0011` at `repo/README.md:25`.
 
-### 5.1 Business goal and constraints fit
-- Verdict: **Partial Pass**
-- Why:
-  - High-level understanding is correct (offline-first governance workbench), but several semantic constraints are incompletely realized.
-- Evidence:
-  - Good alignment: core domains and role model (`README.md:3`, `api/migrations/versions/0002_phase1_identity.py:24`)
-  - Incomplete alignment: embedded feedback UX and required evaluator form behavior not fully delivered in active workflow.
+---
 
-## 6) Aesthetics (Frontend)
+## Verification Notes
 
-### 6.1 Visual and interaction quality
-- Verdict: **Pass** (static)
-- Why:
-  - Consistent visual language and interaction affordances; state badges and dialogs are clear.
-- Evidence:
-  - `web/src/styles.css:20`, `web/src/components/TimelineBadge.vue:7`, `web/src/views/AdminView.vue:177`
-- Boundary:
-  - Responsive runtime rendering cannot be fully proven statically.
-
-## Severity Breakdown (Root Causes)
-
-### Blocker
-1. Backup confidentiality implementation is not production-grade encryption as required.
-- Evidence: `api/app/services/backup_archive.py:33`, `api/app/services/backup_archive.py:37`
-- Why blocker:
-  - This is directly tied to regulated data-protection expectations and prompt-stated encrypted backup behavior.
-
-### High
-2. Object-level authorization gap in cycle assignment listing.
-- Evidence: `api/app/routes/cycles.py:171`
-- Why high:
-  - Cross-user assignment/participant exposure risk.
-
-3. Active evaluator form flow missing prompt-required interaction behaviors.
-- Evidence: `web/src/views/AssignmentFormView.vue:133`
-- Why high:
-  - Core user flow requirement mismatch, not cosmetic.
-
-4. Embedded feedback controls not integrated into active user flow.
-- Evidence: `web/src/views/FeedbackView.vue:39`, `web/src/components/FeedbackControl.vue:71`
-- Why high:
-  - Prompt-specific closed-loop iteration behavior not materially delivered.
-
-### Medium
-5. Share-link role claim is not enforced during resolution.
-- Evidence: `api/app/routes/share.py:28`, `api/app/routes/share.py:64`
-
-6. Share-link revocation lacks ownership/object-scope constraint.
-- Evidence: `api/app/routes/plans.py:541`, `api/app/routes/plans.py:547`
-
-7. Model-run listing lacks explicit permission gate.
-- Evidence: `api/app/routes/models.py:279`
-
-8. Nightly backup automation cannot be proven from repository delivery.
-- Evidence: `api/app/routes/admin_backups.py:76`, `docker-compose.yml:1`
-
-### Low
-9. Error metrics counter appears under-wired.
-- Evidence: `api/app/services/metrics.py:42`
-
-## Detailed Security Posture Summary
-
-- Authentication entry points: **Pass**
-  - Strong static evidence: session token signature/skew checks, lockout controls, CSRF checks.
-- Route-level authorization: **Partial Pass**
-  - Good overall usage of `ensure_permission`, but not universal.
-- Object-level authorization: **Fail**
-  - Important object-scope gaps remain (cycle listing, share-link governance).
-- Function-level authorization: **Partial Pass**
-- Tenant/user isolation: **Partial Pass**
-- Admin/internal protection: **Pass**
-
-## Detailed Test Sufficiency View
-
-The test estate is broad and credible, but coverage is **not fully risk-closing** for all severe defects.
-
-### Strongly covered areas
-- Authentication + CSRF + lockout (`api/tests/api/test_auth.py:28`, `api/tests/api/test_security_headers.py:10`)
-- Lifecycle and transitions (`api/tests/api/test_cycles_lifecycle.py:17`, `e2e/tests/cycle_lifecycle.spec.ts:11`)
-- Scoring determinism and trace behavior (`api/tests/unit/test_scoring.py:22`, `api/tests/api/test_submissions.py:34`)
-- Model promotion and rollback behavior (`api/tests/api/test_models.py:47`, `api/tests/api/test_model_runs.py:38`)
-
-### Under-covered / missing-risk areas
-- No explicit negative test for cycle participant listing authorization at `/api/cycles/{cycle_id}/assignments`.
-- No role-claim enforcement test for share-link role semantics.
-- Assignment page integration tests do not enforce prompt-required subtotal/flag interaction in the active routed evaluator screen.
-
-## Path from Partial Pass to Pass
-
-1. Replace backup placeholder with production-grade encrypted backup path.
-- Target areas: `api/app/services/backup_archive.py`, admin backup route wiring, docs/runbook updates.
-
-2. Fix object-level auth for cycle assignment listing.
-- Target: `api/app/routes/cycles.py:171`
-- Add tests for unauthorized/cross-user listing denial.
-
-3. Wire required evaluator form behavior into active assignment flow.
-- Target: `web/src/views/AssignmentFormView.vue` + integration tests.
-
-4. Integrate embedded feedback controls in active user journey.
-- Target: routed views (inference/result context) using `FeedbackControl.vue`.
-
-5. Enforce share-link role semantics and revocation ownership scope.
-- Target: `api/app/routes/share.py`, `api/app/routes/plans.py` + API tests.
-
-6. Add explicit permission gate to model run listing endpoint.
-- Target: `api/app/routes/models.py:279` + API tests.
-
-7. Clarify and implement nightly backup scheduler evidence.
-- Target: deployment docs/manifests/operator procedure with auditable schedule path.
-
-## Static Boundary Reminder
-Items depending on runtime behavior remain:
-- **Cannot Confirm Statistically**: true runtime p95 conformance in target hardware/network conditions, and operational scheduler correctness unless explicitly verifiable in deployment artifacts.
-
-## Report Metadata
-- Audit mode: static-only
-- Code modifications: none
-- Runtime execution: none
-- Output format: Markdown evidence report
+- Each status above is based on direct file re-read of the evidence paths named in the source audit. No files were modified as part of this verification pass.
+- No runtime execution was performed; latency / encryption / restore claims that depended on runtime in the source audit are not re-asserted here.
+- Issue #1 is marked `fixed` on the delivery-artifact contract (git boundary). The dev-stack filesystem still carries the two files locally, which is the intended behavior for a dockerized dev stack; see `repo/infra/secrets/README.md:3`.
