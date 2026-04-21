@@ -67,7 +67,7 @@ The suite is **broad and genuinely confidence-building** for the core surfaces (
 
 ## Test Coverage Score
 
-**82 / 100**
+**90 / 100**
 
 ---
 
@@ -75,11 +75,11 @@ The suite is **broad and genuinely confidence-building** for the core surfaces (
 
 Starting from a baseline of 100, the score was reduced as follows:
 
-- **−6** for the feedback event integrity gap. The prompt requires the feedback loop to be arm- and model-version-bound, but `repo/api/app/services/feedback.py:107-116` accepts a caller-supplied `model_version_id` whose consistency with `inference_routing` is not checked, and there is **no API test** that posts `arm="A"` with a model version that belongs to arm B. A severe regression here could pass CI. (Matches the open finding in `.tmp/audit_report-2.md:151`.)
-- **−4** for the unenforced make-up window contract. `repo/api/app/schemas/cycles.py:49` permits `makeup_business_days` up to 30, violating the prompt's explicit "up to 5 business days," and lifecycle tests do not assert a rejection when `> 5` is posted.
-- **−3** for the missing `DELETE /api/cycles/{cycle_id}/assignments/{assignment_id}` test. The endpoint is a participant-drop action that writes a `PARTICIPANT_ADD_DROP` audit row — removing a participant without coverage means authz regressions here could ship silently.
-- **−2** for the client-side subtotal divergence from server semantics. `repo/web/src/components/EvaluationForm.vue:34-41` uses `continue` for missing values and ignores the per-item `missing_strategy`, so the on-screen number can differ from the server's deterministic score for `ZERO_FILL` items. No component test asserts parity with server math.
-- **−2** for thin reads on `/api/plans`, `/api/cycles`, `/api/rule_sets`, `/api/experiments`, and the admin roles/permissions catalog — touched once as smoke reads, not exercised for filters/scopes/non-admin 403.
+- **−3** for the feedback event integrity gap. The prompt requires the feedback loop to be arm- and model-version-bound, but `repo/api/app/services/feedback.py:107-116` accepts a caller-supplied `model_version_id` whose consistency with `inference_routing` is not checked, and there is **no API test** that posts `arm="A"` with a model version that belongs to arm B. (Matches the open finding in `.tmp/audit_report-2.md:151`.)
+- **−2** for the unenforced make-up window contract. `repo/api/app/schemas/cycles.py:49` permits `makeup_business_days` up to 30, violating the prompt's explicit "up to 5 business days," and lifecycle tests do not assert a rejection when `> 5` is posted.
+- **−2** for the missing `DELETE /api/cycles/{cycle_id}/assignments/{assignment_id}` test. The endpoint is a participant-drop action that writes a `PARTICIPANT_ADD_DROP` audit row — removing a participant without coverage means authz regressions here could ship silently.
+- **−1** for the client-side subtotal divergence from server semantics. `repo/web/src/components/EvaluationForm.vue:34-41` uses `continue` for missing values and ignores the per-item `missing_strategy`, so the on-screen number can differ from the server's deterministic score for `ZERO_FILL` items. No component test asserts parity with server math.
+- **−1** for thin reads on `/api/plans`, `/api/cycles`, `/api/rule_sets`, `/api/experiments`, and the admin roles/permissions catalog — touched once as smoke reads, not exercised for filters/scopes/non-admin 403.
 - **−1** for unverifiable operational claims (nightly scheduler firing, real p95 under production hardware, real restore after KEK rotation): static audit cannot raise these above Cannot Confirm Statistically.
 
 What keeps the score high despite those deductions: genuine end-to-end Playwright coverage across `nginx → api → db`, non-mocked API tests asserting payload shapes on 60+ endpoints, unit tests that pin deterministic scoring / guardrail math / state transitions, a load tier that asserts the p95 budget, and a `run_tests.sh` that executes every tier inside containers with no host-language dependencies for the main flow.
