@@ -58,7 +58,14 @@ async function signOut() {
       </div>
     </nav>
     <main class="app-shell__main">
-      <DigestBanner />
+      <!--
+        Gated on session.user so the banner's /api/cycles/digest fetch only
+        fires after auth is established. Without this guard, AppShell mounts
+        on app boot before the router `beforeEach` finishes, the digest
+        request 401s, and the unauthorized handler races the guard — which
+        clobbers a deep-link's `next` query with the START_LOCATION "/".
+      -->
+      <DigestBanner v-if="session.user" />
       <RouterView />
     </main>
   </div>

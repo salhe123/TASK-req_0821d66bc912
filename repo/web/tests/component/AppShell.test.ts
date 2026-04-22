@@ -4,6 +4,19 @@ import { createRouter, createMemoryHistory } from "vue-router";
 import { createPinia, setActivePinia } from "pinia";
 import AppShell from "@/components/AppShell.vue";
 import DashboardView from "@/views/DashboardView.vue";
+import { useSessionStore } from "@/stores/session";
+
+function seedSessionUser() {
+  const s = useSessionStore();
+  s.user = {
+    userId: "u1",
+    username: "tester",
+    displayName: "Tester",
+    roles: ["Administrator"],
+    permissions: [{ resource: "*", action: "*" }],
+    fieldViewAllowlist: [],
+  };
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -97,6 +110,7 @@ describe("AppShell", () => {
     );
 
     setActivePinia(createPinia());
+    seedSessionUser();
     const router = makeRouter();
     router.push("/");
     await router.isReady();
