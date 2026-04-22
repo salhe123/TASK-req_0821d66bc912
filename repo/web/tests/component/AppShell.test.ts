@@ -21,9 +21,18 @@ function makeRouter() {
 
 describe("AppShell", () => {
   beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn());
-    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue(jsonResponse({ show: false, as_of_local: "", items: [] }));
+    // Every fetch caller (DashboardView, DigestBanner, …) must get its own
+    // Response instance — a Response body is single-read, so reusing one via
+    // mockResolvedValue leaks "Body has already been read" rejections across
+    // consumers.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({ show: false, as_of_local: "", items: [] }),
+        ),
+      ),
+    );
   });
   afterEach(() => vi.unstubAllGlobals());
 
@@ -65,22 +74,26 @@ describe("AppShell", () => {
   it("surfaces the digest banner globally when the API returns show=true", async () => {
     const m = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
     m.mockReset();
-    m.mockResolvedValue(
-      jsonResponse({
-        show: true,
-        as_of_local: "2026-04-18T09:30:00+00:00",
-        items: [
-          {
-            assignment_id: "a1",
-            cycle_id: "c1",
-            cycle_name: "Q2 2026",
-            state: "IN_PROGRESS",
-            deadline_at: "2026-06-30T17:00:00+00:00",
-            effective_deadline_at: "2026-06-30T17:00:00+00:00",
-            late_eligible: true,
-          },
-        ],
-      }),
+    // Build a fresh Response on every invocation so both the DigestBanner and
+    // any sibling fetch (e.g. DashboardView) can read their own body.
+    m.mockImplementation(() =>
+      Promise.resolve(
+        jsonResponse({
+          show: true,
+          as_of_local: "2026-04-18T09:30:00+00:00",
+          items: [
+            {
+              assignment_id: "a1",
+              cycle_id: "c1",
+              cycle_name: "Q2 2026",
+              state: "IN_PROGRESS",
+              deadline_at: "2026-06-30T17:00:00+00:00",
+              effective_deadline_at: "2026-06-30T17:00:00+00:00",
+              late_eligible: true,
+            },
+          ],
+        }),
+      ),
     );
 
     setActivePinia(createPinia());
