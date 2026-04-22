@@ -37,6 +37,9 @@ const diff = ref<DiffResponse | null>(null);
 const shareOpen = ref(false);
 const rollbackOpen = ref(false);
 const rollbackNote = ref("");
+const copyOpen = ref(false);
+const copyNote = ref("");
+const copyError = ref<string | null>(null);
 const createOpen = ref(false);
 const createError = ref<string | null>(null);
 const newPlan = reactive({
@@ -66,6 +69,23 @@ async function loadDiff() {
     `/api/plans/${selectedPlanId.value}/versions/${selectedVersionId.value}/diff`,
   );
   if (r.ok) diff.value = r.data;
+}
+
+async function doCopy() {
+  copyError.value = null;
+  if (!selectedPlanId.value || !selectedVersionId.value) return;
+  const r = await apiPost<VersionSummary>(
+    `/api/plans/${selectedPlanId.value}/versions/${selectedVersionId.value}/copy`,
+    { note: copyNote.value },
+  );
+  if (!r.ok) {
+    copyError.value = r.message;
+    return;
+  }
+  copyOpen.value = false;
+  copyNote.value = "";
+  await refresh();
+  selectedVersionId.value = r.data.id;
 }
 
 async function doRollback() {
@@ -190,6 +210,14 @@ onMounted(refresh);
           <button type="button" @click="shareOpen = true" data-testid="open-share">
             Share link
           </button>
+          <button
+            v-if="canManage"
+            type="button"
+            @click="copyOpen = true"
+            data-testid="open-copy"
+          >
+            Copy as new version
+          </button>
           <button type="button" @click="rollbackOpen = true" data-testid="open-rollback">
             Roll back to this version
           </button>
@@ -208,6 +236,33 @@ onMounted(refresh);
       :version-id="selectedVersionId"
       @close="shareOpen = false"
     />
+
+    <div v-if="copyOpen" class="modal" role="dialog" data-testid="copy-modal">
+      <div class="modal__card">
+        <h3>Copy as new version</h3>
+        <p>
+          Duplicate v{{
+            selectedPlan?.versions.find((v) => v.id === selectedVersionId)?.version_no
+          }} into a new editable version. The new version's parent will be this
+          one; no lines are changed.
+        </p>
+        <p v-if="copyError" class="error" data-testid="copy-error">{{ copyError }}</p>
+        <textarea
+          v-model="copyNote"
+          placeholder="Note (optional)…"
+          data-testid="copy-note"
+        />
+        <footer>
+          <button type="button" @click="copyOpen = false">Cancel</button>
+          <button
+            type="button"
+            class="primary"
+            @click="doCopy"
+            data-testid="copy-confirm"
+          >Copy</button>
+        </footer>
+      </div>
+    </div>
 
     <div v-if="rollbackOpen" class="modal" role="dialog" data-testid="rollback-modal">
       <div class="modal__card">

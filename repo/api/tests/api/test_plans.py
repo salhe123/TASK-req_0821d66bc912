@@ -260,6 +260,91 @@ async def test_share_requires_view_shared_permission(
 
 
 @pytest.mark.asyncio
+async def test_copy_version_creates_sibling_with_same_lines(
+    admin_client, db_dsn
+) -> None:
+    client, _ = admin_client
+    name = f"plan_{secrets.token_hex(3)}"
+    v1_plan = (
+        await client.post(
+            "/api/plans",
+            json={
+                "name": name,
+                "lines": [
+                    {"line_identity_key": "K1", "part_number": "P-A", "quantity": 3},
+                    {"line_identity_key": "K2", "part_number": "P-B", "quantity": 7},
+                ],
+            },
+        )
+    ).json()
+    plan_id = v1_plan["id"]
+    v1_id = v1_plan["head_version_id"]
+
+    # v2 diverges from v1
+    v2 = (
+        await client.post(
+            f"/api/plans/{plan_id}/versions",
+            json={
+                "parent_version_id": v1_id,
+                "lines": [
+                    {"line_identity_key": "K1", "part_number": "P-A", "quantity": 3},
+                    {"line_identity_key": "K2", "part_number": "P-B", "quantity": 99},
+                ],
+            },
+        )
+    ).json()
+
+    # Copy v1 explicitly — new version's parent must be v1, not head (v2),
+    # and lines must match v1 verbatim.
+    copy = await client.post(
+        f"/api/plans/{plan_id}/versions/{v1_id}/copy",
+        json={"note": "fork for experiment"},
+    )
+    assert copy.status_code == 201, copy.text
+    new_version = copy.json()
+    assert new_version["version_no"] == 3
+    assert new_version["parent_version_id"] == v1_id
+    assert new_version["note"] == "fork for experiment"
+
+    detail = (
+        await client.get(f"/api/plans/{plan_id}/versions/{new_version['id']}")
+    ).json()
+    by_key = {l["line_identity_key"]: l for l in detail["lines"]}
+    assert by_key["K1"]["quantity"] == "3"
+    assert by_key["K2"]["quantity"] == "7"
+
+    with psycopg.connect(db_dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT payload FROM audit_logs "
+            "WHERE action='PLAN_VERSION_COPY' AND resource_id=%s",
+            (plan_id,),
+        )
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0]["source_version_no"] == 1
+        assert row[0]["new_version_no"] == 3
+
+    # Default note when body omits one.
+    copy_default = await client.post(
+        f"/api/plans/{plan_id}/versions/{v2['id']}/copy",
+        json={},
+    )
+    assert copy_default.status_code == 201
+    assert copy_default.json()["note"] == f"copy of v{v2['version_no']}"
+
+
+@pytest.mark.asyncio
+async def test_copy_version_requires_manage_permission(evaluator_client) -> None:
+    client, _ = evaluator_client
+    r = await client.post(
+        f"/api/plans/{secrets.token_hex(16)}/versions/{secrets.token_hex(16)}/copy",
+        json={"note": "noop"},
+    )
+    assert r.status_code == 403
+    assert r.json()["error"] == "permission_denied"
+
+
+@pytest.mark.asyncio
 async def test_duplicate_plan_name_conflict(admin_client) -> None:
     client, _ = admin_client
     name = f"plan_{secrets.token_hex(3)}"

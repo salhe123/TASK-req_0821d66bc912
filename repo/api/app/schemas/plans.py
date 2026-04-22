@@ -114,3 +114,7 @@ class ShareLinkSummary(BaseModel):
 
 class RollbackRequest(BaseModel):
     note: str = Field(default="rollback", max_length=500)
+
+
+class PlanVersionCopyRequest(BaseModel):
+    note: str = Field(default="", max_length=500)

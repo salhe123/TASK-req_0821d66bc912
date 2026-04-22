@@ -19,6 +19,7 @@ from app.schemas.plans import (
     PlanCreateRequest,
     PlanListResponse,
     PlanSummary,
+    PlanVersionCopyRequest,
     PlanVersionCreateRequest,
     PlanVersionDetail,
     PlanVersionSummary,
@@ -270,6 +271,66 @@ async def create_version(
     )
     await db.commit()
 
+    return _version_summary(version)
+
+
+@router.post(
+    "/{plan_id}/versions/{version_id}/copy",
+    response_model=PlanVersionSummary,
+    status_code=201,
+)
+async def copy_version(
+    plan_id: str,
+    version_id: str,
+    body: PlanVersionCopyRequest,
+    db: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(get_auth),
+) -> PlanVersionSummary:
+    ensure_permission(auth, "build_plan", "manage")
+    plan = await _load_plan(db, plan_id)
+    source = await _load_version(db, version_id)
+    if source.plan_id != plan.id:
+        raise NotFound(message="plan version not found")
+
+    next_no = max(v.version_no for v in plan.versions) + 1
+    default_note = f"copy of v{source.version_no}"
+    version = PlanVersion(
+        plan_id=plan.id,
+        version_no=next_no,
+        parent_version_id=source.id,
+        created_by=uuid.UUID(auth.user_id),
+        note=body.note or default_note,
+    )
+    db.add(version)
+    await db.flush()
+
+    for l in source.lines:
+        db.add(
+            BomLine(
+                plan_version_id=version.id,
+                line_identity_key=l.line_identity_key,
+                part_number=l.part_number,
+                description=l.description,
+                quantity=l.quantity,
+                unit=l.unit,
+                notes=l.notes,
+                tags=list(l.tags or []),
+            )
+        )
+    await db.flush()
+    await write_audit(
+        db,
+        action="PLAN_VERSION_COPY",
+        resource_type="plan",
+        resource_id=plan.id,
+        actor_user_id=uuid.UUID(auth.user_id),
+        payload={
+            "new_version_no": next_no,
+            "source_version_id": str(source.id),
+            "source_version_no": source.version_no,
+        },
+    )
+    await db.commit()
     return _version_summary(version)
 
 

@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { RouterLink, RouterView, useRouter, useRoute } from "vue-router";
 import { useSessionStore } from "@/stores/session";
+import DigestBanner from "@/components/DigestBanner.vue";
 
 interface NavItem {
   to: string;
@@ -57,6 +58,7 @@ async function signOut() {
       </div>
     </nav>
     <main class="app-shell__main">
+      <DigestBanner />
       <RouterView />
     </main>
   </div>

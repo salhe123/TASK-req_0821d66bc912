@@ -410,3 +410,46 @@ async def test_evaluator_cannot_submit_others_assignment(
         )
         assert resp.status_code == 403
         assert resp.json()["error"] == "not_your_assignment"
+
+
+@pytest.mark.asyncio
+async def test_create_cycle_rejects_makeup_business_days_above_five(
+    admin_client,
+) -> None:
+    client, _ = admin_client
+    tpl = (
+        await client.post(
+            "/api/templates",
+            json={
+                "name": f"tpl_{secrets.token_hex(3)}",
+                "items": [
+                    {"key": "a", "label": "A", "weight": 1.0, "required": True,
+                     "missing_strategy": "ZERO_FILL"}
+                ],
+            },
+        )
+    ).json()
+
+    deadline = datetime.now(timezone.utc) + timedelta(days=30)
+    resp = await client.post(
+        "/api/cycles",
+        json={
+            "name": "over-limit makeup",
+            "starts_on": str(date.today()),
+            "ends_on": str(date.today() + timedelta(days=30)),
+            "deadline_at": _iso(deadline),
+            "timezone": "UTC",
+            "makeup_enabled": True,
+            "makeup_business_days": 6,
+            "holidays": [],
+            "template_version_id": tpl["latest_version_id"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["error"] == "validation_error"
+    errors = body["details"]["errors"]
+    assert any(
+        "makeup_business_days" in (entry.get("loc") or [])
+        for entry in errors
+    ), body

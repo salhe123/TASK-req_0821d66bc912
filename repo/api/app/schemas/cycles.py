@@ -46,7 +46,7 @@ class CycleCreateRequest(BaseModel):
     deadline_at: datetime
     timezone: str = Field(default="UTC", max_length=64)
     makeup_enabled: bool = False
-    makeup_business_days: int = Field(default=5, ge=0, le=30)
+    makeup_business_days: int = Field(default=5, ge=0, le=5)
     holidays: list[str] = Field(default_factory=list)
     template_version_id: str
     rule_set_version_id: str | None = None

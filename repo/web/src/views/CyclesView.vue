@@ -3,7 +3,6 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRouter, type Router } from "vue-router";
 import { apiGet } from "@/lib/api";
 import { useSessionStore } from "@/stores/session";
-import DigestBanner from "@/components/DigestBanner.vue";
 import TimelineBadge from "@/components/TimelineBadge.vue";
 
 interface AssignmentSummary {
@@ -98,8 +97,6 @@ onMounted(async () => {
 
 <template>
   <section class="cycles-view">
-    <DigestBanner />
-
     <h2>Evaluation cycles</h2>
     <p v-if="loadingCycles">Loading…</p>
     <div v-else-if="!cycles.length" class="empty">No cycles you can participate in.</div>

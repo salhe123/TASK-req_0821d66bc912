@@ -28,14 +28,35 @@ const values = ref<Record<string, number | null>>({ ...(props.initialValues ?? {
 
 watch(values, (v) => emit("update:values", v), { deep: true });
 
+// Mirror the backend scoring contract (app/services/scoring.py):
+//   ZERO_FILL — missing raw value contributes 0 to the numerator, but its
+//     weight still counts in the denominator (i.e. the item drags the score
+//     down).
+//   EXCLUDE_FROM_DENOMINATOR — missing raw value is excluded from both
+//     numerator and denominator (i.e. the item is effectively skipped).
+// Keep these in lockstep so the live subtotal matches the ledger the server
+// will compute on submit.
 const subtotal = computed(() => {
   let weighted = 0;
   let weightSum = 0;
   for (const item of props.items) {
     const raw = values.value[item.key];
-    if (raw === null || raw === undefined) continue;
-    weighted += raw * item.weight;
-    weightSum += item.weight;
+    const present = raw !== null && raw !== undefined;
+    let effectiveValue: number;
+    let effectiveWeight: number;
+    if (present) {
+      effectiveValue = raw as number;
+      effectiveWeight = item.weight;
+    } else if (item.missing_strategy === "EXCLUDE_FROM_DENOMINATOR") {
+      effectiveValue = 0;
+      effectiveWeight = 0;
+    } else {
+      // ZERO_FILL is the documented default for any other value.
+      effectiveValue = 0;
+      effectiveWeight = item.weight;
+    }
+    weighted += effectiveValue * effectiveWeight;
+    weightSum += effectiveWeight;
   }
   return weightSum === 0 ? 0 : weighted / weightSum;
 });

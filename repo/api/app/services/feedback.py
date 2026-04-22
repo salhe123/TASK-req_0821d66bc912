@@ -93,9 +93,11 @@ async def record_feedback(
     if experiment is None:
         raise NotFound(message="experiment not found")
 
-    # Resolve arm / model_version_id if not provided — use the current routing's
-    # configured A arm (the caller is usually asked to include these when the
-    # feedback is tied to a prior predict response).
+    # Resolve and cross-check arm / model_version_id against the experiment's
+    # current routing. Callers normally submit both when replaying a predict
+    # response, but we must refuse combinations the router would never produce
+    # — otherwise a stale client (or an attacker) could attribute signals to a
+    # model the experiment isn't actually routing to.
     routing = (
         await db.execute(
             select(InferenceRouting).where(InferenceRouting.experiment_id == eid)
@@ -104,14 +106,44 @@ async def record_feedback(
     resolved_arm = arm or "A"
     if resolved_arm not in ("A", "B"):
         raise Conflict(error="invalid_arm", message="arm must be A or B")
-    resolved_mv = model_version_id
-    if resolved_mv is None:
-        resolved_mv = str(routing.model_a_id if resolved_arm == "A" else (routing.model_b_id or routing.model_a_id))
-    try:
-        mv_uuid = uuid.UUID(resolved_mv)
-    except ValueError:
-        raise NotFound(message="model version not found")
-    mv = (await db.execute(select(ModelVersion).where(ModelVersion.id == mv_uuid))).scalar_one_or_none()
+
+    if resolved_arm == "B" and routing.model_b_id is None:
+        raise Conflict(
+            error="arm_not_routed",
+            message="experiment has no B arm configured; cannot submit B feedback",
+        )
+
+    routed_mv_for_arm = (
+        routing.model_a_id if resolved_arm == "A" else routing.model_b_id
+    )
+
+    if model_version_id is not None:
+        try:
+            mv_uuid = uuid.UUID(model_version_id)
+        except ValueError:
+            raise NotFound(message="model version not found")
+        if mv_uuid != routed_mv_for_arm:
+            other = (
+                routing.model_b_id if resolved_arm == "A" else routing.model_a_id
+            )
+            if other is not None and mv_uuid == other:
+                raise Conflict(
+                    error="arm_model_mismatch",
+                    message=(
+                        "model_version_id does not match the experiment's "
+                        f"routing for arm {resolved_arm}"
+                    ),
+                )
+            raise Conflict(
+                error="model_not_in_experiment",
+                message="model_version_id is not routed by this experiment",
+            )
+    else:
+        mv_uuid = routed_mv_for_arm
+
+    mv = (
+        await db.execute(select(ModelVersion).where(ModelVersion.id == mv_uuid))
+    ).scalar_one_or_none()
     if mv is None:
         raise NotFound(message="model version not found")
 

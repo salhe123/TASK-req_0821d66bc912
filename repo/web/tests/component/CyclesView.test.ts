@@ -21,10 +21,7 @@ describe("CyclesView", () => {
     const m = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
     // Default for any unlisted call — an empty payload shaped to satisfy the view.
     m.mockResolvedValue(jsonResponse({ items: [] }));
-    m.mockResolvedValueOnce(
-      jsonResponse({ show: false, as_of_local: "2026-04-18T08:00:00+00:00", items: [] }),
-    )
-      .mockResolvedValueOnce(jsonResponse({ items: [] })) // /api/cycles
+    m.mockResolvedValueOnce(jsonResponse({ items: [] })) // /api/cycles
       .mockResolvedValueOnce(jsonResponse([])); // /api/assignments/mine/active
     const w = mount(CyclesView);
     await flushPromises();
@@ -35,10 +32,7 @@ describe("CyclesView", () => {
   it("renders the timeline badge for each assignment", async () => {
     const m = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
     m.mockResolvedValue(jsonResponse({ items: [] }));
-    m.mockResolvedValueOnce(
-      jsonResponse({ show: false, as_of_local: "2026-04-18T08:00:00+00:00", items: [] }),
-    )
-      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+    m.mockResolvedValueOnce(jsonResponse({ items: [] }))
       .mockResolvedValueOnce(
         jsonResponse([
           {
@@ -73,32 +67,4 @@ describe("CyclesView", () => {
     expect(w.text()).toContain("please reconsider q2");
   });
 
-  it("surfaces the digest banner when the API returns show=true", async () => {
-    const m = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
-    m.mockResolvedValue(jsonResponse({ items: [] }));
-    m.mockResolvedValueOnce(
-      jsonResponse({
-        show: true,
-        as_of_local: "2026-04-18T09:30:00+00:00",
-        items: [
-          {
-            assignment_id: "a1",
-            cycle_id: "c1",
-            cycle_name: "Q2 2026",
-            state: "IN_PROGRESS",
-            deadline_at: "2026-06-30T17:00:00+00:00",
-            effective_deadline_at: "2026-06-30T17:00:00+00:00",
-            late_eligible: true,
-          },
-        ],
-      }),
-    )
-      .mockResolvedValueOnce(jsonResponse({ items: [] }))
-      .mockResolvedValueOnce(jsonResponse([]));
-    const w = mount(CyclesView);
-    await flushPromises();
-    await flushPromises();
-    expect(w.find('[data-testid="digest-banner"]').exists()).toBe(true);
-    expect(w.text()).toContain("Q2 2026");
-  });
 });

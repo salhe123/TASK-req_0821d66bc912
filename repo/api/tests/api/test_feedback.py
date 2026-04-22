@@ -219,6 +219,146 @@ async def test_rollback_preserves_events_and_isolates_arms(admin_client, db_dsn)
     assert by_arm_after == by_arm_before
 
 
+async def _setup_single_arm_experiment(client) -> dict:
+    """Build an experiment with only an A arm (no model_b)."""
+    model = (
+        await client.post(
+            "/api/models", json={"name": f"m_{secrets.token_hex(3)}"}
+        )
+    ).json()
+    v1 = (
+        await client.post(
+            f"/api/models/{model['id']}/versions",
+            json={
+                "feature_schema": [_feature("a")],
+                "artifact_params": {"bias": 0.0, "weights": {"a": 1.0}},
+            },
+        )
+    ).json()
+    await promote_with_eval_run(client, model["id"], v1["id"])
+    exp = (
+        await client.post(
+            "/api/experiments",
+            json={
+                "name": f"e_{secrets.token_hex(3)}",
+                "model_a_version_id": v1["id"],
+                "weight_a": 100,
+            },
+        )
+    ).json()
+    return {"exp": exp, "v1": v1}
+
+
+@pytest.mark.asyncio
+async def test_arm_b_rejected_when_experiment_has_no_b_arm(admin_client) -> None:
+    client, _ = admin_client
+    ctx = await _setup_single_arm_experiment(client)
+
+    r = await client.post(
+        "/api/feedback",
+        json={
+            "experiment_id": ctx["exp"]["id"],
+            "subject_key": "sbj",
+            "target_id": "t1",
+            "kind": "LIKE",
+            "arm": "B",
+            "model_version_id": ctx["v1"]["id"],
+        },
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["error"] == "arm_not_routed"
+
+
+@pytest.mark.asyncio
+async def test_arm_model_mismatch_rejected(admin_client) -> None:
+    client, _ = admin_client
+    ctx = await _setup_experiment(client)
+
+    # Claim arm A but submit the B model_version — this is exactly the stale-
+    # client scenario we want to catch.
+    r = await client.post(
+        "/api/feedback",
+        json={
+            "experiment_id": ctx["exp"]["id"],
+            "subject_key": "sbj",
+            "target_id": "t1",
+            "kind": "LIKE",
+            "arm": "A",
+            "model_version_id": ctx["v2"]["id"],
+        },
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["error"] == "arm_model_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_model_not_in_experiment_rejected(admin_client) -> None:
+    client, _ = admin_client
+    ctx = await _setup_experiment(client)
+
+    # A model version that isn't routed by this experiment at all.
+    other = (
+        await client.post("/api/models", json={"name": f"o_{secrets.token_hex(3)}"})
+    ).json()
+    other_v = (
+        await client.post(
+            f"/api/models/{other['id']}/versions",
+            json={
+                "feature_schema": [_feature("a")],
+                "artifact_params": {"bias": 5.0, "weights": {"a": 1.0}},
+            },
+        )
+    ).json()
+    await promote_with_eval_run(client, other["id"], other_v["id"])
+
+    r = await client.post(
+        "/api/feedback",
+        json={
+            "experiment_id": ctx["exp"]["id"],
+            "subject_key": "sbj",
+            "target_id": "t1",
+            "kind": "LIKE",
+            "arm": "A",
+            "model_version_id": other_v["id"],
+        },
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["error"] == "model_not_in_experiment"
+
+
+@pytest.mark.asyncio
+async def test_valid_arm_model_pair_accepted_and_attributes_to_routing(
+    admin_client, db_dsn
+) -> None:
+    client, _ = admin_client
+    ctx = await _setup_experiment(client)
+
+    r = await client.post(
+        "/api/feedback",
+        json={
+            "experiment_id": ctx["exp"]["id"],
+            "subject_key": "sbj",
+            "target_id": "tX",
+            "kind": "LIKE",
+            "arm": "B",
+            "model_version_id": ctx["v2"]["id"],
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["arm"] == "B"
+    assert r.json()["signal_updated"] is True
+
+    with psycopg.connect(db_dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT arm, model_version_id FROM feedback_events "
+            "WHERE experiment_id = %s AND target_id = 'tX'",
+            (ctx["exp"]["id"],),
+        )
+        row = cur.fetchone()
+        assert row[0] == "B"
+        assert str(row[1]) == ctx["v2"]["id"]
+
+
 @pytest.mark.asyncio
 async def test_invalid_kind_rejected(admin_client) -> None:
     client, _ = admin_client

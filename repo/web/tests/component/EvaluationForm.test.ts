@@ -57,4 +57,40 @@ describe("EvaluationForm", () => {
     const last = emitted![emitted!.length - 1][0] as Record<string, unknown>;
     expect(last.q1).toBe(5);
   });
+
+  it("ZERO_FILL keeps weight in denominator for missing items", async () => {
+    // Both items are ZERO_FILL. Filling q1 only should drag the subtotal down
+    // because q2's weight still counts.
+    const w = mount(EvaluationForm, { props: { items } });
+    await w.find('[data-testid="input-q1"]').setValue("6");
+    // numerator = 6*1 + 0*2 = 6; denominator = 1 + 2 = 3; subtotal = 2.0000
+    expect(w.find('[data-testid="subtotal"]').text()).toContain("2.0000");
+  });
+
+  it("EXCLUDE_FROM_DENOMINATOR drops weight for missing items", async () => {
+    const excludeItems = [
+      { ...items[0] },
+      { ...items[1], missing_strategy: "EXCLUDE_FROM_DENOMINATOR" },
+    ];
+    const w = mount(EvaluationForm, { props: { items: excludeItems } });
+    await w.find('[data-testid="input-q1"]').setValue("6");
+    // q2 excluded entirely → numerator = 6*1 = 6; denominator = 1; subtotal = 6.0000
+    expect(w.find('[data-testid="subtotal"]').text()).toContain("6.0000");
+  });
+
+  it("mixed missing strategies: excluded item doesn't drag ZERO_FILL item", async () => {
+    const mixed = [
+      { key: "a", label: "A", weight: 1.0, required: false,
+        missing_strategy: "ZERO_FILL" },
+      { key: "b", label: "B", weight: 3.0, required: false,
+        missing_strategy: "ZERO_FILL" },
+      { key: "c", label: "C", weight: 5.0, required: false,
+        missing_strategy: "EXCLUDE_FROM_DENOMINATOR" },
+    ];
+    const w = mount(EvaluationForm, { props: { items: mixed } });
+    await w.find('[data-testid="input-a"]').setValue("4");
+    // b is ZERO_FILL missing (0, weight 3); c is excluded; a=4, w=1.
+    // numerator = 4*1 + 0*3 = 4; denominator = 1 + 3 = 4; subtotal = 1.0000
+    expect(w.find('[data-testid="subtotal"]').text()).toContain("1.0000");
+  });
 });
