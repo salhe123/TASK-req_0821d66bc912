@@ -1,475 +1,349 @@
 # Model Governance & Evaluation Workbench — API Specification
 
 Base URL: `/api`
-All authenticated endpoints require `Authorization: Bearer <session-token>`.
-All state-changing requests from the SPA require a CSRF double-submit header `X-CSRF-Token: <value>`.
-Session tokens carry an embedded `issued_at`; the server rejects tokens whose skew exceeds 60 seconds.
-All list endpoints support `page` and `size` query parameters.
+Authentication: `Authorization: Bearer <session-token>` header OR `mgew_session` cookie (httpOnly, samesite=strict).
+CSRF: all state-changing requests require `X-CSRF-Token: <value>` header matching the session's CSRF token. Missing/invalid → 403 `csrf_missing`.
+Session tokens carry an embedded nonce bound to the session's CSRF token; skew > 60 s → 401 `token_skew_exceeded`; tokens past max age → 401 `token_expired`.
 
 ---
 
-## 1. Authentication & Session (`/api/auth`)
+## 1. Authentication (`/api/auth`)
 
-### POST `/login`
+### POST `/auth/login`
+Request: `{ "username": "...", "password": "..." }` (min 1 char each)
+Response 200:
+```json
+{
+  "user_id": "uuid", "username": "...", "roles": ["Administrator"],
+  "csrf_token": "...", "session_token": "...", "expires_at": "ISO8601"
+}
+```
+Sets `mgew_session` cookie. Errors: 401 `invalid_credentials`, 423 `account_locked`.
+
+### POST `/auth/logout`
+Revokes current session, deletes cookie. Returns `{ "ok": true }`.
+
+### POST `/auth/change-password`
+Request: `{ "current_password": "...", "new_password": "..." }` (new ≥ 12 chars)
+Errors: 400 `invalid_current_password`.
+
+### GET `/auth/me`
+Returns session user profile including `csrf_token` (for page-reload rehydration):
+```json
+{
+  "user_id": "uuid", "username": "...", "display_name": "...",
+  "roles": ["..."], "permissions": [{"resource":"...","action":"..."}],
+  "field_view_allowlist": ["*"], "timezone": "UTC", "csrf_token": "..."
+}
+```
+
+### POST `/auth/me/timezone`
+Request: `{ "timezone": "America/Los_Angeles" }` (IANA name)
+Errors: 400 `invalid_timezone`. Audited as `USER_TIMEZONE_UPDATE`.
+
+---
+
+## 2. Evaluation Cycles (`/api/cycles`)
+
+### GET `/cycles`
+**Permission:** `cycle:participate`, `cycle:manage`, or `cycle:review` (others get empty list).
+Response: `{ "items": [CycleSummary] }`
+
+### POST `/cycles` — *cycle:manage*
 Request:
 ```json
-{ "username": "evaluator1", "password": "MinimumTwelveCharsPass" }
+{
+  "name": "Q2 2026", "starts_on": "2026-04-01", "ends_on": "2026-06-30",
+  "deadline_at": "2026-06-30T17:00:00Z", "timezone": "UTC",
+  "makeup_enabled": false, "makeup_business_days": 5,
+  "holidays": [], "template_version_id": "uuid",
+  "rule_set_version_id": "uuid|null"
+}
 ```
+Response 201: `CycleSummary`.
+
+### GET `/cycles/{cycle_id}/assignments`
+**Scoping:** `cycle:manage` or `cycle:review` sees all assignments; others see only own rows (evaluator or reviewer).
+Response: `{ "items": [AssignmentSummary] }`
+
+### POST `/cycles/{cycle_id}/assignments` — *cycle:manage*
+Request: `{ "evaluator_user_id": "uuid", "reviewer_user_id": "uuid|null" }`
+Response 201: `AssignmentSummary`.
+
+### GET `/cycles/digest`
+Per-user daily digest gated at 9:00 AM in user's timezone preference.
+Response: `{ "show": true, "as_of_local": "ISO8601", "items": [DigestItem] }`
+
+---
+
+## 3. Assignments (`/api/assignments`)
+
+### GET `/assignments/{id}` — *object-level: owner, assigned reviewer, or admin*
+Response: `AssignmentSummary` (id, cycle_id, evaluator_user_id, reviewer_user_id, state, submitted_at, late_flag, returned_reason, archived_at).
+
+### GET `/assignments/{id}/form` — *object-level: owner, assigned reviewer, or admin*
+Response: `{ "assignment": AssignmentSummary, "cycle_name": "...", "deadline_at": "...", "template_version_id": "uuid", "items": [...], "draft_values": {...} }`
+
+### POST `/assignments/{id}/save` — *evaluator owner only*
+Request: `{ "values": { "q1": 8, "q2": 9 } }`
+Transitions NOT_STARTED → IN_PROGRESS or RETURNED_FOR_REVISION → IN_PROGRESS.
+
+### POST `/assignments/{id}/submit` — *evaluator owner only*
+Request: `{ "values": { "q1": 8, "q2": 9 } }`
+Transitions to SUBMITTED. Writes submission + calculation_trace. Errors: 409 `invalid_transition`, `deadline_passed_no_makeup`.
+
+### POST `/assignments/{id}/return` — *assigned reviewer only (or admin)*
+Request: `{ "reason": "..." }` (min 3 chars)
+Transitions SUBMITTED → RETURNED_FOR_REVISION. Permission: `cycle:review`.
+
+### POST `/assignments/{id}/approve` — *assigned reviewer only (or admin)*
+Transitions SUBMITTED → ARCHIVED. Permission: `cycle:review`.
+
+### GET `/assignments/mine/active`
+Returns caller's non-archived assignments.
+
+---
+
+## 4. Submissions (`/api/submissions`)
+
+### GET `/submissions/{id}` — *object-level authz*
+Response (sensitive fields masked by allowlist):
+```json
+{
+  "id": "uuid", "assignment_id": "uuid", "template_version_id": "uuid",
+  "rule_set_version_id": "uuid", "actor_user_id": "uuid|***",
+  "submitted_at": "ISO8601"
+}
+```
+
+### GET `/submissions/{id}/trace` — *object-level authz*
 Response:
 ```json
 {
-  "token": "opaque-signed-session-token",
-  "expiresInSeconds": 28800,
-  "roles": ["EVALUATOR"],
-  "fieldViewAllowlist": []
+  "submission_id": "uuid", "template_version_id": "uuid",
+  "rule_set_version_id": "uuid", "trace": { "engine_version": "...",
+  "steps": [...], "totals": {...} }, "trace_hash": "sha256hex",
+  "computed_at": "ISO8601"
 }
 ```
-Errors:
-- 401 `unauthenticated` — invalid credentials
-- 423 `account_locked` — 5 failed attempts within 15 minutes
 
-### POST `/logout`
-Invalidates the current session.
-
-### POST `/change-password`
-```json
-{ "oldPassword": "...", "newPassword": "AtLeastTwelveChars" }
-```
-Errors:
-- 400 `validation_failed` — new password < 12 chars
-
-### GET `/session`
-Returns current session metadata including remaining idle time and active roles.
+### POST `/submissions/{id}/grades/{item_key}` — *cycle:review + assigned reviewer*
+Request: `{ "value": "7" }`. Writes `GRADE_EDIT` audit with content_hash (not raw value).
 
 ---
 
-## 2. Evaluation Cycles (`/api/cycles`)  *(addresses Q1)*
+## 5. Templates (`/api/templates`)
 
-### GET `/`
-Filters: `status` (`open` | `closed` | `all`), `keyword`.
-Response item:
-```json
-{
-  "id": "uuid",
-  "name": "Q2 2026",
-  "startsAt": "04/01/2026",
-  "deadlineAt": "06/30/2026 05:11 PM",
-  "makeupEnabled": true,
-  "makeupBusinessDays": 5
-}
-```
+### GET `/templates` — *template:manage*
+Response: `[TemplateSummary]` (id, name, description, latest_version_id, latest_version_no, items).
 
-### POST `/`  *(Administrator)*
-```json
-{
-  "name": "Q2 2026",
-  "startsAt": "04/01/2026",
-  "deadlineAt": "06/30/2026 05:11 PM",
-  "makeupEnabled": true,
-  "makeupBusinessDays": 5,
-  "holidays": ["05/26/2026"]
-}
-```
+### POST `/templates` — *template:manage*
+Request: `{ "name": "...", "description": "...", "items": [TemplateItem] }`
+TemplateItem: `{ "key": "q1", "label": "Q1", "weight": 1.0, "required": true, "missing_strategy": "ZERO_FILL", "min_value": null, "max_value": null, "outlier_z": null }`
 
-### GET `/{cycleId}`
-
-### PUT `/{cycleId}`  *(Administrator — toggles `makeupEnabled` and holidays)*
-
-### GET `/{cycleId}/assignments`
-Filters: `evaluatorUserId`, `state`, `late`.
-Response item:
-```json
-{
-  "id": "uuid",
-  "cycleId": "uuid",
-  "evaluatorUserId": "uuid",
-  "subjectId": "uuid",
-  "state": "IN_PROGRESS",
-  "effectiveDeadlineAt": "07/07/2026 05:11 PM",
-  "late": false
-}
-```
-
-### POST `/{cycleId}/assignments`  *(Administrator, ML Engineer)*
-Add participants. Writes `PARTICIPANT_ADD_DROP` audit entry.
-```json
-{ "evaluatorUserId": "uuid", "subjectId": "uuid" }
-```
-
-### DELETE `/{cycleId}/assignments/{assignmentId}`
-Remove participant. Writes `PARTICIPANT_ADD_DROP`.
-
-### GET `/digest`  *(caller-scoped)*
-Returns the 9:00 AM local-time in-app digest for the caller: assignments due within 48 h, returned-for-revision, overdue-within-makeup.
+### POST `/templates/{id}/versions` — *template:manage*
+Publishes a new template version with updated items.
 
 ---
 
-## 3. Evaluations & Submissions (`/api/evaluations`)  *(addresses Q1, Q2)*
+## 6. Rule Sets (`/api/rule_sets`)
 
-### GET `/assignments/{assignmentId}`
-Returns the evaluation form state, template version, weights, current values, and flags.
+### GET `/rule_sets` — *rule_set:manage*
+Response: `{ "items": [RuleSetSummary] }` with versions array.
 
-### PUT `/assignments/{assignmentId}/values`
-Partial save of evaluator inputs. First save transitions `NOT_STARTED → IN_PROGRESS`.
-```json
-{
-  "values": {
-    "item_1": "85",
-    "item_2": null,
-    "item_3": "42"
-  }
-}
-```
+### POST `/rule_sets` — *rule_set:manage*
+Request: `{ "name": "...", "description": "...", "rules": { "outlier_z_default": "3.0" } }`
 
-### POST `/assignments/{assignmentId}/submit`
-Transition `IN_PROGRESS → SUBMITTED`. Server re-runs the scoring engine and writes a `calculation_trace`. Rejects if required items missing or threshold flags not acknowledged.
-Errors:
-- 400 `validation_failed` — list missing items
-- 400 `threshold_flag_unacknowledged`
-- 409 `invalid_transition`
-- 409 `deadline_passed_no_makeup`
+### POST `/rule_sets/{id}/versions` — *rule_set:manage*
+Request: `{ "rules": { "outlier_z_default": "2.5" } }`
 
+---
+
+## 7. Build Plans (`/api/plans`)
+
+### GET `/plans` — *build_plan:view*
+Response: `{ "items": [PlanSummary] }` (id, name, description, head_version_id, head_version_no, versions[]).
+
+### POST `/plans` — *build_plan:manage*
+Request: `{ "name": "...", "description": "...", "note": "initial", "lines": [BomLineIn] }`
+BomLineIn: `{ "line_identity_key": "K1", "part_number": "P-A", "description": "", "quantity": "10", "unit": "ea", "notes": "", "tags": [] }`
+
+### POST `/plans/{id}/versions` — *build_plan:manage*
+Request: `{ "parent_version_id": "uuid|null", "note": "...", "lines": [BomLineIn] }`
+
+### GET `/plans/{id}/versions/{vid}` — *build_plan:view*
+Validates `version.plan_id == plan_id`. Response: `PlanVersionDetail` with lines.
+
+### GET `/plans/{id}/versions/{vid}/diff` — *build_plan:view*
+Query: `?against=uuid` (defaults to parent). Response: `{ "base_version_id": "...", "target_version_id": "...", "entries": [DiffLineOut] }`
+
+### GET `/plans/{id}/versions/{vid}/export` — *build_plan:view*
+Returns signed `.zip` bundle (binary). Audited as `PLAN_EXPORT`.
+
+### POST `/plans/{id}/versions/{vid}/rollback` — *build_plan:manage*
+Request: `{ "note": "..." }`. Creates new version from target's BOM.
+
+### POST `/plans/{id}/versions/{vid}/share` — *build_plan:manage*
+Request: `{ "role": "Plan Owner", "expires_in_days": 7 }` (1–3650, clamped to 7)
+Response: `{ "id": "uuid", "plan_version_id": "...", "role": "...", "token": "...", "expires_at": "..." }`
+
+### GET `/plans/share-links/mine` — *build_plan:manage*
+### DELETE `/plans/share-links/{id}` — *build_plan:manage, issuer only (or admin)*
+
+---
+
+## 8. Share Link Resolution (`/api/share`)
+
+### GET `/share/{token}` — *build_plan:view_shared + role match*
+Resolves a share token to the plan version content. Validates `link.role` is in caller's roles (admin wildcard bypasses). Errors: 403 `share_link_invalid`, `share_link_role_mismatch`.
+
+---
+
+## 9. Model Registry (`/api/models`)
+
+### GET `/models`
+**Gated:** empty list unless caller has any `model:*` permission or admin wildcard.
+
+### POST `/models` — *model:register*
+Request: `{ "name": "...", "description": "..." }`
+
+### POST `/models/{id}/versions` — *model:register*
+Request: `{ "feature_schema": [FeatureDescriptor], "artifact_uri": "...", "artifact_params": {} }`
+FeatureDescriptor: `{ "name": "a", "dtype": "float", "transform": "identity", "source_query_hash": "q1" }`
+
+### POST `/models/{id}/versions/{vid}/runs` — *model:run*
+Request: `{ "kind": "TRAINING|EVALUATION", "dataset_ref": "...", "notes": "..." }`
+Response 201: `ModelRunSummary`.
+
+### POST `/models/{id}/versions/{vid}/runs/{rid}/complete` — *model:run*
+Request: `{ "status": "SUCCEEDED|FAILED", "metrics": {}, "notes": "..." }`
+Errors: 409 `run_already_completed`.
+
+### GET `/models/{id}/versions/{vid}/runs` — *model:run*
+
+### POST `/models/{id}/versions/{vid}/promote` — *model:promote*
+Errors: 409 `evaluation_run_required` (no SUCCEEDED eval run), 409 `feature_schema_mismatch`.
+
+---
+
+## 10. Experiments (`/api/experiments`)
+
+### GET `/experiments`
+**Gated:** empty list unless caller has `experiment:manage`, `model:route/rollback`, `feedback:submit`, or admin wildcard.
+
+### POST `/experiments` — *experiment:manage*
+Request: `{ "name": "...", "description": "...", "model_a_version_id": "uuid", "model_b_version_id": "uuid|null", "weight_a": 90 }`
+
+### POST `/experiments/{id}/toggle` — *experiment:manage*
+Request: `{ "ingest_enabled": true, "apply_enabled": true }`
+
+### POST `/experiments/{id}/routing` — *model:route*
+Request: `{ "weight_a": 70 }` (weight_b = 100 - weight_a)
+
+### POST `/experiments/{id}/rollback` — *model:rollback*
+Request: `{ "trigger": "manual|metric", "reason": "..." }`
+Sets weight_a=100, weight_b=0, disables both toggles.
+
+---
+
+## 11. Inference (`/api/inference`)
+
+### POST `/inference/predict` — *feedback:submit*
+Request: `{ "experiment_id": "uuid", "subject_key": "user-42", "features": { "a": 0.5 } }`
 Response:
 ```json
 {
-  "state": "SUBMITTED",
-  "late": false,
-  "submissionId": "uuid",
-  "totalScore": "87.25"
+  "subject_key": "user-42", "experiment_id": "uuid", "arm": "A",
+  "model_version_id": "uuid", "score": 0.87, "latency_ms": 42.3
 }
 ```
-
-### POST `/assignments/{assignmentId}/return`  *(Reviewer)*
-```json
-{ "reason": "item_3 outside expected range, please verify" }
-```
-Transition `SUBMITTED → RETURNED_FOR_REVISION`.
-
-### POST `/assignments/{assignmentId}/approve`  *(Reviewer)*
-Transition `SUBMITTED → ARCHIVED`. Rejects if open flags without override.
-
-### GET `/submissions/{submissionId}/trace`
-Returns the full calculation ledger:
-```json
-{
-  "submissionId": "uuid",
-  "templateVersionId": "uuid",
-  "ruleSetVersionId": "uuid",
-  "inputs": { "item_1": "85", "item_2": null, "item_3": "42" },
-  "steps": [
-    {
-      "itemId": "item_1",
-      "rawValue": "85",
-      "effectiveValue": "85",
-      "weight": "0.50",
-      "subtotal": "42.50",
-      "missingStrategy": null,
-      "flags": []
-    },
-    {
-      "itemId": "item_2",
-      "rawValue": null,
-      "effectiveValue": null,
-      "weight": "0.30",
-      "subtotal": "0",
-      "missingStrategy": "EXCLUDE_FROM_DENOMINATOR",
-      "flags": ["missing"]
-    },
-    {
-      "itemId": "item_3",
-      "rawValue": "42",
-      "effectiveValue": "42",
-      "weight": "0.20",
-      "subtotal": "8.40",
-      "missingStrategy": null,
-      "flags": ["outlier"]
-    }
-  ],
-  "totalScore": "72.71",
-  "createdAt": "04/18/2026 11:42 AM"
-}
-```
-
-### GET `/submissions/{submissionId}/history`
-Immutable transition history for the underlying assignment.
+Errors: 409 `experiment_apply_disabled`.
 
 ---
 
-## 4. Build Plans (`/api/plans`)  *(addresses Q3)*
+## 12. Feedback (`/api/feedback`)
 
-### POST `/`  *(Plan Owner)*
-```json
-{ "name": "Chassis Revision 2026-A", "initialLines": [] }
-```
+### POST `/feedback` — *feedback:submit*
+Request: `{ "experiment_id": "uuid", "subject_key": "user-42", "target_id": "item-1", "kind": "LIKE|NOT_INTERESTED|BLOCK", "arm": "A", "model_version_id": "uuid" }`
+**Subject binding:** `subject_key` must equal `auth.user_id` (admin wildcard can override; audited as `FEEDBACK_SUBJECT_OVERRIDE`).
+Errors: 429 `rate_limited` (>60/min per subject), 403 `subject_impersonation_forbidden`.
 
-### GET `/`
-Filters: `ownerUserId`, `keyword`.
+### GET `/feedback/signals/{experiment_id}` — *experiment:manage*
+Response: `{ "items": [SignalOut] }` (experiment_id, arm, target_id, like_count, not_interested_count, last_updated_at).
 
-### GET `/{planId}`
-
-### POST `/{planId}/versions`
-Create a new version from a parent (or from scratch). Version rows are immutable after save.
-```json
-{ "parentVersionId": "uuid", "lines": [ { "lineIdentityKey": "LN-001", "partNo": "PT-100", "quantity": "2.00", "notes": "keep", "tags": ["critical"] } ] }
-```
-
-### POST `/{planId}/versions/copy`
-```json
-{ "fromVersionId": "uuid" }
-```
-
-### GET `/{planId}/versions/{versionId}`
-
-### GET `/{planId}/versions/{versionId}/diff`
-Query: `?against={otherVersionId}` (defaults to parent).
-Response:
-```json
-{
-  "fromVersionId": "uuid",
-  "toVersionId": "uuid",
-  "changes": [
-    { "lineIdentityKey": "LN-001", "change": "QUANTITY_CHANGED", "before": "2.00", "after": "3.00", "notes": "scale up" },
-    { "lineIdentityKey": "LN-010", "change": "ADDED", "after": { "partNo": "PT-205", "quantity": "1.00" } },
-    { "lineIdentityKey": "LN-007", "change": "REMOVED", "before": { "partNo": "PT-099", "quantity": "1.00" } }
-  ]
-}
-```
-
-### POST `/{planId}/versions/{versionId}/export`
-Returns a signed `.zip` bundle (binary) containing `plan.json`, `diff.json`, and `signature`.
-
-### POST `/{planId}/versions/{versionId}/share-links`  *(Plan Owner)*
-Issue a time-limited share token.
-```json
-{ "roleId": "uuid", "expiresAt": "04/25/2026 05:00 PM" }
-```
-Response:
-```json
-{ "shareLinkId": "uuid", "token": "opaque", "expiresAt": "04/25/2026 05:00 PM" }
-```
-
-### POST `/share-links/{shareLinkId}:revoke`  *(Plan Owner, Administrator)*
-
-### GET `/share-links/{token}:resolve`
-Requires an active session *and* `build_plan:view_shared` permission. 403 otherwise.
-
-### POST `/{planId}/versions/{versionId}:rollback`
-Creates a new version whose content copies an earlier version's BOM, with `parent_version_id` set to current head. Writes `PLAN_ROLLBACK` audit.
+### GET `/feedback/blocks/{subject_key}` — *own-subject: feedback:submit; cross-subject: experiment:manage*
+Errors: 403 `subject_scope_denied`.
 
 ---
 
-## 5. Model Registry & Inference (`/api/models`, `/api/inference`)  *(addresses Q4)*
+## 13. Administration
 
-### Registry — `/api/models`
+### Users (`/api/admin/users`) — *user:manage*
+- `GET /admin/users` — list
+- `POST /admin/users` — create: `{ "username": "...", "password": "...", "roles": ["Evaluator"], "display_name": "..." }`
+- `GET /admin/users/{id}`
+- `PATCH /admin/users/{id}` — update (is_active, roles, display_name)
+- `POST /admin/users/{id}/unlock` — clear lockout
 
-#### POST `/`  *(ML Engineer)*
-```json
-{ "name": "ranker" }
-```
+### Roles (`/api/admin/roles`) — *role:manage*
+- `GET /admin/roles`
+- `POST /admin/roles` — create with field_view_allowlist + permissions
+- `PATCH /admin/roles/{id}`
+- `GET /admin/permissions` — catalog of all resource:action pairs
 
-#### POST `/{modelId}/versions`
-Register a new model version with its feature schema snapshot.
-```json
-{
-  "versionNo": "2026.04.18-1",
-  "featureSchema": [
-    { "name": "user_tenure_days", "dtype": "int", "transform": "none", "sourceHash": "abc123" }
-  ],
-  "metrics": { "auc": "0.891", "p95Ms": "118" }
-}
-```
-Response includes the server-computed `featureSchemaHash`.
+### Audit (`/api/admin/audit`) — *audit:read*
+- `GET /admin/audit/logs` — filters: actor_user_id, resource_type, resource_id, action, since, until, limit (1–500)
+  Response: `{ "items": [AuditLogEntry] }` (sensitive fields masked by role allowlist)
 
-#### POST `/{modelId}/versions/{versionId}:promote`
-Transition to `APPROVED`. Blocks with 409 `feature_schema_mismatch` if the inference service's current schema hash differs.
-```json
-{ "error": "feature_schema_mismatch", "details": { "missing": ["recency_score"], "extra": ["legacy_flag"] } }
-```
-
-#### POST `/{modelId}/versions/{versionId}:deprecate`
-
-#### GET `/{modelId}/versions`
-
-### Routing — `/api/models/routing`
-
-#### GET `/`
-Returns the active routing rule set.
-
-#### PUT `/`
-Update routing weights. Writes `ROUTING_CHANGE` audit.
-```json
-{ "modelAId": "uuid", "modelBId": "uuid", "weightA": 90, "weightB": 10 }
-```
-
-#### POST `/:rollback`
-One-click rollback: sets `weightA=100, weightB=0`. Body records trigger metadata.
-```json
-{ "trigger": "manual", "reason": "guardrail breach" }
-```
-
-### Experiments — `/api/experiments`
-
-#### POST `/`  *(ML Engineer)*
-```json
-{ "name": "ranker-2026.04", "modelAId": "uuid", "modelBId": "uuid", "ingestEnabled": true, "applyEnabled": true }
-```
-
-#### PUT `/{experimentId}/toggles`
-```json
-{ "ingestEnabled": false, "applyEnabled": false }
-```
-
-### Inference — `/api/inference`
-
-#### POST `/predict`
-Caller provides `subjectKey` for sticky routing.
-```json
-{ "subjectKey": "user-42", "features": { "user_tenure_days": 120 } }
-```
-Response:
-```json
-{
-  "modelVersionId": "uuid",
-  "arm": "A",
-  "prediction": { "score": "0.87" },
-  "latencyMs": 42
-}
-```
-SLO: p95 ≤ 150 ms for approved models.
+### Backups (`/api/admin/backups`) — *backup:manage*
+- `GET /admin/backups` — list archives
+- `POST /admin/backups` — create (runs pg_dump + AES-GCM encrypt)
+- `POST /admin/backups/{id}/stage` — enter maintenance mode, verify KEK + manifest hash
+- `POST /admin/backups/{id}/commit` — run pg_restore (when BACKUP_RESTORE_EXECUTE=true) or state-machine only
+- `POST /admin/backups/{id}/abort` — exit maintenance without restore
+- `POST /admin/backups/prune` — remove archives + files older than 30 days
 
 ---
 
-## 6. Feedback (`/api/feedback`)  *(addresses Q5)*
-
-### POST `/events`
-```json
-{
-  "subjectKey": "user-42",
-  "targetId": "item-9991",
-  "eventType": "LIKE",
-  "modelVersionId": "uuid",
-  "experimentId": "uuid"
-}
-```
-Errors:
-- 429 `rate_limited` — > 60 events/min per subject
-- 400 `validation_failed` — unknown `eventType`
-
-Behavior:
-- `BLOCK` is persistent across toggles
-- `LIKE` / `NOT_INTERESTED` update the per-arm signal within 60 seconds when `ingestEnabled=true`
-
-### GET `/events`  *(ML Engineer, Administrator)*
-Filters: `experimentId`, `modelVersionId`, `eventType`, `createdFrom`, `createdTo`.
-
----
-
-## 7. Administration (`/api/admin`)  *(addresses Q6)*
-
-### Users — `/admin/users`
-
-#### POST `/`
-```json
-{ "username": "reviewer1", "password": "AtLeastTwelveChars", "roleIds": ["uuid"] }
-```
-
-#### GET `/`
-Filters: `role`, `status`, `keyword`.
-
-#### PUT `/{id}`
-
-#### PUT `/{id}/unlock`
-Clears failed-attempt lockout.
-
-#### POST `/{id}/reset-password`
-Admin-assisted reset; new password must meet policy.
-
-### Roles — `/admin/roles`
-
-#### POST `/`
-```json
-{
-  "name": "REVIEWER",
-  "fieldViewAllowlist": ["grade_values.raw_value", "evaluator_notes"],
-  "permissions": [
-    { "resource": "assignment", "action": "approve" },
-    { "resource": "assignment", "action": "return" }
-  ]
-}
-```
-
-#### GET `/`
-
-#### PUT `/{id}`
-
-#### DELETE `/{id}`
-
-### Permissions — `/admin/permissions`
-
-#### GET `/`
-Returns the resource/action catalog.
-
-### Audit Logs — `/admin/audit`
-
-#### GET `/logs`
-Append-only — no mutation endpoints.
-Filters: `actorUserId`, `resourceType`, `resourceId`, `action`, `dateFrom`, `dateTo`.
-Covered actions: `PARTICIPANT_ADD_DROP`, `RULE_CHANGE`, `GRADE_EDIT`, `PLAN_ROLLBACK`, `MODEL_PROMOTION`, `ROUTING_CHANGE`, `SHARE_LINK_ISSUE`, `SHARE_LINK_OPEN`, `SHARE_LINK_REVOKE`, `BACKUP_RESTORE`.
-
-### Backups & Restore — `/admin/backups`
-
-#### GET `/`
-List nightly backup archives with size, manifest hash, and age (30-day retention).
-
-#### POST `/{archiveId}/restore:stage`
-Phase 1: enter maintenance mode, verify KEK against archive header, restore into staging schema. Administrator only.
-
-#### POST `/{archiveId}/restore:commit`
-Phase 2: atomic swap to live schema. Writes `BACKUP_RESTORE` audit.
-
-#### POST `/{archiveId}/restore:abort`
-Exits maintenance mode without swap.
-
----
-
-## 8. Health & Diagnostics
+## 14. Health & Metrics
 
 ### GET `/health`
-Process liveness. `200 { "status": "ok" }`.
+`200 { "status": "ok" }`
 
 ### GET `/health/ready`
-Checks DB connectivity, migrations applied, and KEK loaded.
+Checks DB connectivity + KEK loaded. Response: `{ "status": "ok"|"degraded", "checks": {...} }`
 
-### GET `/metrics`
+### GET `/metrics` — *audit:read*
 ```json
 {
-  "requestsTotal": 18423,
-  "errorsTotal": 12,
-  "inferenceP95Ms": 118,
-  "inferenceP95ViolationsTotal": 0,
-  "activeSessions": 17,
-  "feedbackEventsPerMinute": 42
+  "requestsTotal": 18423, "errorsTotal": 12,
+  "inferenceP95Ms": 118.5, "inferenceP95ViolationsTotal": 0,
+  "activeSessions": 17, "feedbackEventsPerMinute": 42,
+  "p95BudgetMs": 150.0
 }
 ```
 
 ---
 
-## 9. Conventions
+## 15. Conventions
 
-- **CSRF:** state-changing SPA requests include `X-CSRF-Token`; missing/invalid → 403.
-- **Token anti-replay (Q6):** sessions carry `issued_at`; skew > 60 s → 401 `token_skew_exceeded`.
-- **RBAC field masking (Q6):** sensitive fields return masked unless the caller's `fieldViewAllowlist` grants the field.
-- **Timestamps:** dates render MM/DD/YYYY and times 12-hour AM/PM on API responses; stored internally as UTC `TIMESTAMPTZ`.
-- **Money & scores:** NUMERIC values serialized as two-decimal strings to avoid float drift.
-- **Errors:** always envelope `{ "error": "<code>", "message": "...", "details": { ... } }`.
+- **Error envelope:** all errors return `{ "error": "<code>", "message": "...", "details": {...} }`
+- **CSRF:** mutating SPA requests include `X-CSRF-Token`; server returns csrf_token in both login response and `/auth/me` for page-reload rehydration
+- **Token anti-replay:** bounded acceptance window (60 s future skew + session max-age past bound) + nonce binding to session csrf_token
+- **RBAC field masking:** sensitive fields return `"***"` unless the caller's `field_view_allowlist` grants the field name (or `"*"` wildcard)
+- **Timestamps:** ISO 8601 strings; stored internally as UTC TIMESTAMPTZ
+- **Numeric precision:** `Decimal` / `NUMERIC`; no binary floats in scoring or pricing math
+- **IDs:** UUID v4 (server-generated)
 
-| HTTP | Common codes |
-|------|--------------|
-| 400 | `validation_failed`, `threshold_flag_unacknowledged` |
-| 401 | `unauthenticated`, `session_expired`, `token_skew_exceeded` |
-| 403 | `forbidden`, `out_of_scope`, `share_link_permission_missing` |
+| HTTP | Common error codes |
+|------|--------------------|
+| 400 | `validation_error`, `invalid_current_password`, `invalid_timezone` |
+| 401 | `missing_session`, `session_expired`, `session_revoked`, `token_skew_exceeded`, `token_expired`, `token_nonce_mismatch`, `invalid_credentials` |
+| 403 | `permission_denied`, `csrf_missing`, `not_your_assignment`, `not_assigned_reviewer`, `not_your_submission`, `subject_impersonation_forbidden`, `subject_scope_denied`, `share_link_role_mismatch`, `share_link_not_yours`, `share_link_invalid` |
 | 404 | `not_found` |
-| 409 | `invalid_transition`, `feature_schema_mismatch`, `deadline_passed_no_makeup`, `version_conflict` |
+| 409 | `invalid_transition`, `feature_schema_mismatch`, `evaluation_run_required`, `deadline_passed_no_makeup`, `plan_name_taken`, `model_name_taken`, `rule_set_name_taken`, `run_already_completed`, `already_assigned`, `experiment_apply_disabled`, `restore_already_staged`, `kek_fingerprint_mismatch` |
+| 422 | `validation_error` (Pydantic field-level) |
 | 423 | `account_locked` |
 | 429 | `rate_limited` |
-| 500 | `internal_error` |
+| 500 | `internal_error`, `restore_failed` |
+| 503 | `maintenance` |

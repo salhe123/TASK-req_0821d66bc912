@@ -24,6 +24,7 @@ coverage/
 # Local env
 .env
 .env.local
+.env.*
 
 # Secrets (dev-only mount — never commit real KEK material)
 infra/secrets/kek
