@@ -67,13 +67,17 @@ This project is designed to run entirely within containers. You must have:
 
 3. **Build and start the stack:**
    ```bash
+   docker-compose up --build -d
+   ```
+   Equivalent on Compose v2 plugin:
+   ```bash
    docker compose up --build -d
    ```
 
 4. **Seed the first administrator** (one-shot, KEK-verified; you choose the
    password via `SEED_ADMIN_PASSWORD`):
    ```bash
-   docker compose exec -e SEED_ADMIN_PASSWORD='AdminTest123!' api \
+   docker-compose exec -e SEED_ADMIN_PASSWORD='AdminTest123!' api \
      python -m app.scripts.seed_admin --username admin
    ```
 
@@ -84,8 +88,47 @@ This project is designed to run entirely within containers. You must have:
 
 6. **Stop the application:**
    ```bash
-   docker compose down -v
+   docker-compose down -v
    ```
+
+## Verification (Required)
+
+Use both API and UI checks to confirm the system is healthy.
+
+### API Verification (curl/Postman)
+
+1. Health check:
+   ```bash
+   curl -i http://localhost:8000/api/health
+   ```
+   Expected: HTTP `200` and body containing `"status":"ok"`.
+
+2. Login check (replace credentials if you changed them):
+   ```bash
+   curl -i http://localhost:8000/api/auth/login \
+     -H 'Content-Type: application/json' \
+     -d '{"username":"admin","password":"AdminTest123!"}'
+   ```
+   Expected: HTTP `200` and JSON including `session_token` and `csrf_token`.
+
+3. Authenticated check in Postman (or equivalent):
+   - `GET http://localhost:8000/api/auth/me`
+   - Header `Authorization: Bearer <session_token from login>`
+   - Header `X-CSRF-Token: <csrf_token from login>`
+   Expected: HTTP `200` and role/permission payload.
+
+### UI Verification
+
+1. Open `http://localhost:8080`.
+2. Log in with `admin / AdminTest123!`.
+3. Confirm these pages load without auth errors:
+   - `Dashboard`
+   - `Evaluation Cycles`
+   - `Build Plans`
+   - `Model Registry`
+   - `Feedback`
+   - `Administration`
+4. In `Administration`, confirm users and audit tabs load data.
 
 ## Testing
 
@@ -133,10 +176,58 @@ via the KEK-verified `seed_admin` CLI (step 4 above), so the password is
 operator-chosen rather than a hard-coded default — a requirement of the
 regulated / air-gapped design.
 
-For the local walkthrough using the commands on this page and `./run_tests.sh`:
+For local demo/login and role-based checks, use this explicit matrix.
 
 | Role | Username | Password | Notes |
 | :--- | :--- | :--- | :--- |
 | **Administrator** | `admin` | `AdminTest123!` | Set by you in step 4; full access to every module. |
+| **Evaluator** | `demo_evaluator` | `Demo-Password-123!` | Use for evaluator-only flows and permission checks. |
+| **Reviewer** | `demo_reviewer` | `Demo-Password-123!` | Use for review/approval permission checks. |
+| **Plan Owner** | `demo_plan_owner` | `Demo-Password-123!` | Use for share-link and build-plan permission checks. |
+| **ML Engineer** | `demo_ml_engineer` | `Demo-Password-123!` | Use for model registry and routing permission checks. |
 | **Administrator** (test only) | `e2e_admin` | `E2E-Admin-Pass-1` | Seeded by `run_tests.sh` before the Playwright tier; lives only in the disposable test DB and is torn down with the stack. |
-| **Evaluator / Reviewer / Plan Owner / ML Engineer** | created by admin | chosen on create | Created via `/api/admin/users` or the Administration UI. |
+
+Create the four demo role users above from the running stack with the admin account:
+
+```bash
+docker-compose exec api python - <<'PY'
+import asyncio, httpx
+
+API = "http://localhost:8000"
+ADMIN_USER = "admin"
+ADMIN_PASS = "AdminTest123!"
+PASSWORD = "Demo-Password-123!"
+
+USERS = [
+    ("demo_evaluator", ["Evaluator"]),
+    ("demo_reviewer", ["Reviewer"]),
+    ("demo_plan_owner", ["Plan Owner"]),
+    ("demo_ml_engineer", ["ML Engineer"]),
+]
+
+async def main():
+    async with httpx.AsyncClient(base_url=API, timeout=10.0) as c:
+        r = await c.post("/api/auth/login", json={"username": ADMIN_USER, "password": ADMIN_PASS})
+        r.raise_for_status()
+        body = r.json()
+        c.headers["Authorization"] = f"Bearer {body['session_token']}"
+        c.headers["X-CSRF-Token"] = body["csrf_token"]
+
+        for username, roles in USERS:
+            resp = await c.post(
+                "/api/admin/users",
+                json={
+                    "username": username,
+                    "display_name": username,
+                    "password": PASSWORD,
+                    "roles": roles,
+                },
+            )
+            if resp.status_code in (200, 201, 409):
+                print(f"{username}: {resp.status_code}")
+            else:
+                raise RuntimeError(f"{username}: {resp.status_code} {resp.text}")
+
+asyncio.run(main())
+PY
+```
